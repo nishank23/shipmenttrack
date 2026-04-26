@@ -1,0 +1,9 @@
+{
+  "projects": {
+    "default": "shipmenttrack-837ec",
+    "prod": "your-firebase-project-id",
+    "staging": "shipmenttrack-837ec"
+  },
+  "targets": {},
+  "etags": {}
+}
