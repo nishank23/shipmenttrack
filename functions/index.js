@@ -1,21 +1,20 @@
-import axios from 'axios'
-import { createTransport } from 'nodemailer'
-import { initializeApp, applicationDefault, cert }  from 'firebase-admin/app'
-import { getFirestore, Timestamp , FieldValue, Filter } from 'firebase-admin/firestore'
-import { info, error as _error, warn } from 'firebase-functions/logger'
-import { onRequest } from 'firebase-functions/v2/https'
-import { defineSecret } from 'firebase-functions/params'
-import { onSchedule } from 'firebase-functions/v2/scheduler'
-import { extractTrackingPayload } from './lib/trackingExtractors.js'
-import { currentTimestamp, nor } from 'firebase/firestore/pipelines'
+  import axios from 'axios'
+  import { createTransport } from 'nodemailer'
+  import { initializeApp, applicationDefault, cert }  from 'firebase-admin/app'
+  import { getFirestore, Timestamp , FieldValue, Filter } from 'firebase-admin/firestore'
+  import { info, error as _error, warn } from 'firebase-functions/logger'
+  import { onRequest } from 'firebase-functions/v2/https'
+  import { defineSecret } from 'firebase-functions/params'
+  import { onSchedule } from 'firebase-functions/v2/scheduler'
+  import { extractTrackingPayload } from './lib/trackingExtractors.js'
 
-initializeApp();
+  initializeApp();
 
 
-const db = getFirestore();
+  const db = getFirestore();
 
-const SMTP_EMAIL = defineSecret('SMTP_EMAIL')
-const SMTP_PASSWORD = defineSecret('SMTP_PASSWORD')
+  const SMTP_EMAIL = defineSecret('SMTP_EMAIL')
+  const SMTP_PASSWORD = defineSecret('SMTP_PASSWORD')
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000
 const HTTP_TIMEOUT_MS = 15000

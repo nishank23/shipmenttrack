@@ -296,9 +296,9 @@ function Dashboard() {
   const userInitial = (displayName[0] ?? userEmail[0] ?? 'S').toUpperCase()
 
   return (
-    <main className="mx-auto min-h-screen w-full max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+    <main className="app-shell mx-auto min-h-screen w-full max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
       <div className="space-y-6">
-        <header className="flex flex-col gap-4 rounded-[2rem] border border-slate-200/80 bg-white/90 p-5 shadow-xl shadow-slate-900/5 backdrop-blur dark:border-white/10 dark:bg-slate-950/70 dark:shadow-black/20 sm:p-6 lg:flex-row lg:items-center lg:justify-between">
+        <header className="app-motion-card flex flex-col gap-4 rounded-[2rem] border border-slate-200/80 bg-white/90 p-5 shadow-xl shadow-slate-900/5 backdrop-blur dark:border-white/10 dark:bg-slate-950/70 dark:shadow-black/20 sm:p-6 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <p className="text-sm font-medium tracking-[0.24em] text-sky-600 uppercase dark:text-sky-200">
               ShipTrack
@@ -357,7 +357,7 @@ function Dashboard() {
           {summaryCards.map((card) => (
             <article
               key={card.label}
-              className="rounded-3xl border border-slate-200/70 bg-white/90 p-5 shadow-lg shadow-slate-900/5 dark:border-white/10 dark:bg-slate-950/70 dark:shadow-black/20"
+              className="app-motion-card rounded-3xl border border-slate-200/70 bg-white/90 p-5 shadow-lg shadow-slate-900/5 dark:border-white/10 dark:bg-slate-950/70 dark:shadow-black/20"
             >
               <p className="text-sm text-slate-500 dark:text-slate-400">{card.label}</p>
               <p className={`mt-3 text-3xl font-semibold ${card.tone}`}>{card.value}</p>
@@ -365,7 +365,7 @@ function Dashboard() {
           ))}
         </section>
 
-        <section className="rounded-[2rem] border border-slate-200/80 bg-white/90 p-5 shadow-xl shadow-slate-900/5 dark:border-white/10 dark:bg-slate-950/70 dark:shadow-black/20 sm:p-6">
+        <section className="app-motion-card rounded-[2rem] border border-slate-200/80 bg-white/90 p-5 shadow-xl shadow-slate-900/5 dark:border-white/10 dark:bg-slate-950/70 dark:shadow-black/20 sm:p-6">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex flex-col gap-4 md:flex-row md:items-end">
               <label className="flex min-w-[180px] flex-col gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
@@ -407,7 +407,7 @@ function Dashboard() {
 
               <Link
                 to="/add"
-                className="inline-flex items-center justify-center rounded-2xl bg-slate-950 px-4 py-3 text-sm font-medium text-white transition hover:bg-slate-800 dark:bg-white dark:text-slate-950 dark:hover:bg-slate-100"
+                className="inline-flex items-center justify-center rounded-2xl bg-slate-950 px-4 py-3 text-sm font-medium text-white shadow-lg shadow-slate-950/10 transition hover:-translate-y-0.5 hover:bg-slate-800 dark:bg-cyan-300 dark:text-slate-950 dark:shadow-cyan-400/10 dark:hover:bg-cyan-200"
               >
                 Add shipment
               </Link>
@@ -439,7 +439,7 @@ function Dashboard() {
                 </p>
                 <Link
                   to="/add"
-                  className="mt-6 inline-flex items-center justify-center rounded-2xl bg-slate-950 px-4 py-3 text-sm font-medium text-white transition hover:bg-slate-800 dark:bg-white dark:text-slate-950 dark:hover:bg-slate-100"
+                  className="mt-6 inline-flex items-center justify-center rounded-2xl bg-slate-950 px-4 py-3 text-sm font-medium text-white shadow-lg shadow-slate-950/10 transition hover:-translate-y-0.5 hover:bg-slate-800 dark:bg-cyan-300 dark:text-slate-950 dark:shadow-cyan-400/10 dark:hover:bg-cyan-200"
                 >
                   Add shipment
                 </Link>

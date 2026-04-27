@@ -304,13 +304,13 @@ function ShipmentForm() {
 
   const pageTitle = isEditing ? 'Edit shipment' : 'Add shipment'
   const pageCopy = isEditing
-    ? 'Update the shipment details and keep your ETA timeline accurate.'
-    : 'Capture a new shipment, detect the carrier from the B/L number, and start tracking alerts.'
+    ? 'Update the shipment details and keep your ETA list accurate.'
+    : 'Capture a new shipment, detect the carrier from the B/L number, and prepare ETA email alerts.'
 
   return (
-    <main className="mx-auto min-h-screen w-full max-w-5xl px-4 py-8 sm:px-6 lg:px-8">
+    <main className="app-shell mx-auto min-h-screen w-full max-w-5xl px-4 py-8 sm:px-6 lg:px-8">
       <div className="space-y-6">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="app-motion-card flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-sm font-medium tracking-[0.24em] text-sky-600 uppercase dark:text-sky-200">
               ShipTrack
@@ -331,7 +331,7 @@ function ShipmentForm() {
           </Link>
         </div>
 
-        <section className="rounded-[2rem] border border-slate-200/80 bg-white/90 p-6 shadow-xl shadow-slate-900/5 backdrop-blur dark:border-white/10 dark:bg-slate-950/70 dark:shadow-black/20 sm:p-8">
+        <section className="app-motion-card rounded-[2rem] border border-slate-200/80 bg-white/90 p-6 shadow-xl shadow-slate-900/5 backdrop-blur dark:border-white/10 dark:bg-slate-950/70 dark:shadow-black/20 sm:p-8">
           {isLoadingShipment ? (
             <div className="flex min-h-80 items-center justify-center text-sm text-slate-500 dark:text-slate-300">
               Loading shipment details...
@@ -512,7 +512,7 @@ function ShipmentForm() {
                 <button
                   type="submit"
                   disabled={isSubmitting}
-                  className="inline-flex items-center justify-center rounded-2xl bg-slate-950 px-5 py-3 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70 dark:bg-white dark:text-slate-950 dark:hover:bg-slate-100"
+                  className="inline-flex items-center justify-center rounded-2xl bg-slate-950 px-5 py-3 text-sm font-medium text-white shadow-lg shadow-slate-950/10 transition hover:-translate-y-0.5 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70 dark:bg-cyan-300 dark:text-slate-950 dark:shadow-cyan-400/10 dark:hover:bg-cyan-200"
                 >
                   {isSubmitting
                     ? isEditing

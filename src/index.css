@@ -2,13 +2,20 @@
 @import "tailwindcss";
 
 :root {
-  color: #dbeafe;
-  background-color: #020617;
+  color: #0f172a;
+  background-color: #f8fafc;
   font-family: 'Space Grotesk', 'Segoe UI', sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color: #dbeafe;
+    background-color: #020617;
+  }
 }
 
 * {
@@ -23,9 +30,18 @@ body {
   margin: 0;
   min-height: 100vh;
   background:
-    radial-gradient(circle at top left, rgba(34, 211, 238, 0.18), transparent 28%),
-    radial-gradient(circle at top right, rgba(14, 165, 233, 0.2), transparent 24%),
-    linear-gradient(180deg, #020617 0%, #0f172a 52%, #111827 100%);
+    linear-gradient(135deg, rgba(14, 165, 233, 0.08), transparent 28%),
+    linear-gradient(315deg, rgba(20, 184, 166, 0.1), transparent 30%),
+    linear-gradient(180deg, #f8fafc 0%, #eef6ff 52%, #f1f5f9 100%);
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    background:
+      linear-gradient(135deg, rgba(34, 211, 238, 0.16), transparent 28%),
+      linear-gradient(315deg, rgba(251, 191, 36, 0.08), transparent 28%),
+      linear-gradient(180deg, #020617 0%, #0f172a 52%, #111827 100%);
+  }
 }
 
 body,
@@ -42,4 +58,302 @@ a {
 
 #root {
   min-height: 100vh;
+}
+
+input,
+textarea,
+select {
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  input,
+  textarea,
+  select {
+    color-scheme: dark;
+  }
+}
+
+.login-stage {
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  .login-stage {
+    color-scheme: dark;
+  }
+}
+
+.login-grid-bg {
+  background:
+    linear-gradient(rgba(15, 23, 42, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.07) 1px, transparent 1px),
+    radial-gradient(circle at 18% 16%, rgba(20, 184, 166, 0.18), transparent 28%),
+    radial-gradient(circle at 78% 78%, rgba(251, 191, 36, 0.16), transparent 26%);
+  background-size: 54px 54px, 54px 54px, auto, auto;
+}
+
+@media (prefers-color-scheme: dark) {
+  .login-grid-bg {
+    background:
+      linear-gradient(rgba(148, 163, 184, 0.09) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(148, 163, 184, 0.09) 1px, transparent 1px),
+      radial-gradient(circle at 18% 16%, rgba(45, 212, 191, 0.2), transparent 28%),
+      radial-gradient(circle at 80% 76%, rgba(251, 191, 36, 0.13), transparent 26%);
+    background-size: 54px 54px, 54px 54px, auto, auto;
+  }
+}
+
+.login-sweep {
+  background: linear-gradient(115deg, transparent 0%, rgba(34, 211, 238, 0.14) 42%, transparent 58%);
+  transform: translateX(-70%);
+  animation: loginSweep 7s ease-in-out infinite;
+}
+
+.login-panel,
+.login-dashboard {
+  animation: loginRise 620ms ease-out both;
+}
+
+.login-dashboard {
+  animation-delay: 120ms;
+}
+
+.login-stat {
+  animation: loginFloat 5s ease-in-out infinite;
+}
+
+.login-stat:nth-child(2) {
+  animation-delay: 650ms;
+}
+
+.login-stat:nth-child(3) {
+  animation-delay: 1.2s;
+}
+
+.login-pulse-ring {
+  box-shadow: 0 0 0 0 rgba(45, 212, 191, 0.45);
+  animation: loginPulse 1.8s ease-out infinite;
+}
+
+.login-google-button {
+  overflow: hidden;
+  position: relative;
+}
+
+.login-google-button::after {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.38), transparent);
+  content: '';
+  inset: 0;
+  position: absolute;
+  transform: translateX(-120%);
+  animation: buttonSheen 3.8s ease-in-out infinite;
+}
+
+.login-google-button > * {
+  position: relative;
+  z-index: 1;
+}
+
+.login-scanline {
+  animation: scanline 2.9s linear infinite;
+  box-shadow: 0 0 18px rgba(103, 232, 249, 0.9);
+}
+
+.login-route-glow {
+  background:
+    radial-gradient(circle at 22% 50%, rgba(52, 211, 153, 0.18), transparent 24%),
+    radial-gradient(circle at 56% 50%, rgba(251, 191, 36, 0.16), transparent 20%),
+    radial-gradient(circle at 86% 52%, rgba(251, 113, 133, 0.15), transparent 22%);
+}
+
+.login-route-track::after {
+  background-image: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.75), transparent);
+  content: '';
+  height: 100%;
+  left: 0;
+  position: absolute;
+  top: 0;
+  width: 26%;
+  animation: routeSpark 2.2s linear infinite;
+}
+
+.login-route-fill {
+  transform-origin: left center;
+  animation: routeBreathe 3s ease-in-out infinite;
+}
+
+.login-route-dot {
+  animation: routeDot 2.4s ease-in-out infinite;
+}
+
+.login-route-dot-mid {
+  animation-delay: 420ms;
+}
+
+.app-shell {
+  isolation: isolate;
+  position: relative;
+}
+
+.app-shell::before {
+  background:
+    linear-gradient(rgba(15, 23, 42, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.04) 1px, transparent 1px);
+  background-size: 46px 46px;
+  content: '';
+  inset: 0;
+  pointer-events: none;
+  position: fixed;
+  z-index: -1;
+}
+
+@media (prefers-color-scheme: dark) {
+  .app-shell::before {
+    background:
+      linear-gradient(rgba(148, 163, 184, 0.06) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(148, 163, 184, 0.06) 1px, transparent 1px);
+    background-size: 46px 46px;
+  }
+}
+
+.app-motion-card {
+  animation: loginRise 520ms ease-out both;
+}
+
+@keyframes loginSweep {
+  0%,
+  42% {
+    transform: translateX(-76%);
+  }
+  72%,
+  100% {
+    transform: translateX(76%);
+  }
+}
+
+@keyframes loginRise {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes loginFloat {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
+
+@keyframes loginPulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(45, 212, 191, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 16px rgba(45, 212, 191, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(45, 212, 191, 0);
+  }
+}
+
+@keyframes buttonSheen {
+  0%,
+  52% {
+    transform: translateX(-120%);
+  }
+  72%,
+  100% {
+    transform: translateX(120%);
+  }
+}
+
+@keyframes scanline {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(100dvh);
+  }
+}
+
+@keyframes routeSpark {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(420%);
+  }
+}
+
+@keyframes routeBreathe {
+  0%,
+  100% {
+    opacity: 0.78;
+    transform: translateY(-50%) scaleX(0.95);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-50%) scaleX(1);
+  }
+}
+
+@keyframes routeDot {
+  0%,
+  100% {
+    transform: translateY(-50%) scale(1);
+  }
+  50% {
+    transform: translateY(-50%) scale(1.18);
+  }
+}
+
+@media (max-height: 760px) {
+  .login-extra {
+    display: none;
+  }
+
+  .login-route {
+    min-height: 118px;
+  }
+}
+
+@media (max-height: 640px) {
+  .login-stage h1 {
+    font-size: 2rem;
+    line-height: 1.05;
+  }
+
+  .login-stage h2 {
+    font-size: 1.5rem;
+    line-height: 1.1;
+  }
+
+  .login-route {
+    min-height: 96px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-sweep,
+  .login-panel,
+  .login-dashboard,
+  .login-stat,
+  .login-pulse-ring,
+  .login-google-button::after,
+  .login-scanline,
+  .login-route-track::after,
+  .login-route-fill,
+  .login-route-dot,
+  .app-motion-card {
+    animation: none;
+  }
 }
