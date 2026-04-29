@@ -1,4 +1,4 @@
-const { cheerio } = require('cheerio')
+import { load } from 'cheerio'
 
 const carrierExtractors = {
   MSC: extractMscTracking,
@@ -13,7 +13,7 @@ function extractMscEta(payload) {
   return payload?.Data?.BillOfLadings?.[0]?.GeneralTrackingInfo?.FinalPodEtaDate
 }
 
-function extractTrackingPayload({ carrier, payload, blNo }) {
+export function extractTrackingPayload({ carrier, payload, blNo }) {
   const normalizedCarrier = normalizeString(carrier).toUpperCase()
   const extractor = carrierExtractors[normalizedCarrier] || extractUnknownTracking
   
@@ -154,47 +154,106 @@ function extractOneTracking(payload, blNo) {
   }
 }
 
-function extractEvergreenTracking(payload, blNo) {
-  return extractHtmlOrObjectTracking('EVERGREEN', payload, blNo)
+export function extractEvergreenTracking(html) {
+  const $ = load(html);
+
+  return {
+    eta: extractEvergreenEta($),
+    events: [],
+    containers: [],
+  };
 }
 
 function extractPilTracking(payload, blNo) {
-  return extractHtmlOrObjectTracking('PIL', payload, blNo)
-}
-
-function extractHtmlOrObjectTracking(source, payload, blNo) {
   const normalizedPayload = parsePotentialJson(payload)
 
-  if (isHtmlPayload(normalizedPayload)) {
-    return extractTrackingFromHtml(source, normalizedPayload, blNo)
+  /**
+   * PIL response format:
+   * {
+   *   success: true,
+   *   data: "<html string>"
+   * }
+   */
+
+  const html = normalizedPayload?.data || ''
+
+  if (!html || typeof html !== 'string') {
+    return {
+      source: 'PIL',
+      eta: null,
+      events: [],
+      trackingNumber: blNo,
+    }
   }
 
-  if (
-    normalizedPayload &&
-    (typeof normalizedPayload === 'object' || Array.isArray(normalizedPayload))
-  ) {
-    return extractGenericTrackingObject(source, normalizedPayload, blNo)
-  }
+  const $ = load(html)
+
+  let eta = null
+  const events = []
+
+  /**
+   * We want:
+   * Discharge Port row
+   *
+   * Example:
+   * <td class="location">
+   *   Discharge Port
+   *   SINGAPORE
+   *   SGSIN
+   * </td>
+   *
+   * next-location contains:
+   * MZMPM
+   * 03-May-2026   ← ETA we want
+   */
+
+  $('tr.resultrow').each((index, row) => {
+    const locationText = $(row)
+      .find('.location')
+      .text()
+      .replace(/\s+/g, ' ')
+      .trim()
+
+    if (
+      locationText.includes('Discharge Port')
+    ) {
+      const nextLocationText = $(row)
+        .find('.next-location')
+        .text()
+        .replace(/\s+/g, ' ')
+        .trim()
+
+      /**
+       * Example:
+       * "MZMPM 03-May-2026"
+       */
+
+      const dateMatch = nextLocationText.match(
+        /\d{2}-[A-Za-z]{3}-\d{4}/
+      )
+
+      if (dateMatch?.[0]) {
+        eta = parseDateCandidate(dateMatch[0])
+      }
+
+      events.push({
+        id: `pil-discharge-${index}`,
+        title: 'Discharge Port',
+        description: nextLocationText,
+        location: locationText,
+        occurredAt: eta,
+      })
+    }
+  })
 
   return {
-    source,
-    eta: null,
-    events: [],
-    trackingNumber: blNo,
-  }
-}
-
-function extractTrackingFromHtml(source, html, blNo) {
-  const $ = cheerio.load(String(html || ''))
-  const events = extractEventsFromHtml($)
-
-  return {
-    source,
-    eta: extractEtaFromHtml($),
+    source: 'PIL',
+    eta,
     events,
     trackingNumber: blNo,
   }
 }
+
 
 function extractGenericTrackingObject(source, payload, blNo) {
   return {
@@ -436,6 +495,22 @@ function extractEventsFromHtml($) {
 
   return events
 }
+export function extractEvergreenEta($) {
+  try {
+    const etaText = $('td.ec-fs-16b')
+      .filter((_, el) =>
+        $(el).text().includes('Estimated Date of Arrival at Destination')
+      )
+      .find('font')
+      .text()
+      .trim();
+
+    return etaText || null;
+  } catch (error) {
+    console.error('Evergreen ETA extraction failed:', error);
+    return null;
+  }
+}
 
 function extractEtaFromRows(rows) {
   for (const row of rows) {
@@ -555,12 +630,4 @@ function isHtmlPayload(payload) {
 
 function normalizeString(value) {
   return String(value || '').trim()
-}
-
-module.exports = {
-  extractTrackingPayload,
-  extractMscTracking,
-  extractOneTracking,
-  extractEvergreenTracking,
-  extractPilTracking,
 }

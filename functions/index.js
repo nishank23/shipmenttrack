@@ -1,20 +1,19 @@
-  import axios from 'axios'
-  import { createTransport } from 'nodemailer'
-  import { initializeApp, applicationDefault, cert }  from 'firebase-admin/app'
-  import { getFirestore, Timestamp , FieldValue, Filter } from 'firebase-admin/firestore'
-  import { info, error as _error, warn } from 'firebase-functions/logger'
-  import { onRequest } from 'firebase-functions/v2/https'
-  import { defineSecret } from 'firebase-functions/params'
-  import { onSchedule } from 'firebase-functions/v2/scheduler'
-  import { extractTrackingPayload } from './lib/trackingExtractors.js'
+import axios from 'axios'
+import { createTransport } from 'nodemailer'
+import { initializeApp, applicationDefault, cert }  from 'firebase-admin/app'
+import { getFirestore, Timestamp , FieldValue, Filter } from 'firebase-admin/firestore'
+import { info, error as _error, warn } from 'firebase-functions/logger'
+import { onRequest } from 'firebase-functions/v2/https'
+import { defineSecret } from 'firebase-functions/params'
+import { onSchedule } from 'firebase-functions/v2/scheduler'
+import { extractTrackingPayload } from './lib/trackingExtractors.js'
 
-  initializeApp();
+initializeApp();
 
 
-  const db = getFirestore();
-
-  const SMTP_EMAIL = defineSecret('SMTP_EMAIL')
-  const SMTP_PASSWORD = defineSecret('SMTP_PASSWORD')
+const db = getFirestore();
+const SMTP_EMAIL = defineSecret('SMTP_EMAIL')
+const SMTP_PASSWORD = defineSecret('SMTP_PASSWORD')
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000
 const HTTP_TIMEOUT_MS = 15000
@@ -722,11 +721,6 @@ async function scrapeMsc(blNo) {
         timeout: 15000
       }
     )
-  console.log('Raw MSC response:', extractTrackingPayload({
-      carrier: 'MSC',
-      payload: response.data,
-      blNo,
-    }))
   return extractTrackingPayload({
     carrier: 'MSC',
     payload: response.data,
@@ -764,11 +758,11 @@ async function scrapeOne(blNo) {
 }
 
 async function scrapeEvergreen(blNo) {
+  const normalizedTrackingNumber = normalizeEvergreenBl(blNo)
+
   const body = new URLSearchParams({
-    BL_No: blNo,
-    blno: blNo,
-    TYPE: 'BL',
-    SELTYPE: 'BL',
+    BL: normalizedTrackingNumber,
+    TYPE: 'BL'
   })
 
   const response = await axios.post(
@@ -778,6 +772,9 @@ async function scrapeEvergreen(blNo) {
       timeout: HTTP_TIMEOUT_MS,
       headers: {
         ...defaultHeaders,
+        "Origin": 'https://ct.shipmentlink.com',
+        'Referer': 'https://ct.shipmentlink.com/servlet/TDB1_CargoTracking.do',
+        'User-Agent': ' Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36', 
         'content-type': 'application/x-www-form-urlencoded',
       },
     },
@@ -791,16 +788,37 @@ async function scrapeEvergreen(blNo) {
 }
 
 async function scrapePil(blNo) {
-  const response = await axios.get(
-    'https://www.pilship.com/en-tracking-result/188.html',
+  const getN = await axios.get(
+    'https://www.pilship.com/wp-content/themes/hello-theme-child-master/pil-api/common/get-n.php?',
     {
       params: {
-        blno: blNo,
+        timestamp: Date.now(),
       },
       timeout: HTTP_TIMEOUT_MS,
-      headers: defaultHeaders,
+      headers: { ...defaultHeaders,
+          'Referer': 'https://www.pilship.com/digital-solutions/?tab=customer&id=track-trace&label=containerTandT&module=TrackTraceBL&refNo=' + blNo,
+      }
     },
   )
+  const nValue = getN.data?.n
+  console.log(`Obtained n value for PIL tracking: ${nValue} (BL: ${blNo})`)
+  const response = await axios.get('https://www.pilship.com/wp-content/themes/hello-theme-child-master/pil-api/trackntrace-containertnt.php?', {
+     params: {
+        module: 'TrackTraceBL',
+        'refNo': blNo,
+        'n': nValue,
+        timestamp: Date.now(),
+      },
+      timeout: HTTP_TIMEOUT_MS,
+      headers:{ ...defaultHeaders,
+          'Referer': 'https://www.pilship.com/digital-solutions/?tab=customer&id=track-trace&label=containerTandT&module=TrackTraceBL&refNo=' + blNo,
+      } 
+  })
+
+
+  console.log(`Raw PIL response for ${blNo}:`, response.data)
+
+
 
   return extractTrackingPayload({
     carrier: 'PIL',
@@ -860,6 +878,16 @@ function normalizeOneBl(blNo) {
   const normalizedBl = normalizeString(blNo).toUpperCase()
 
   if (normalizedBl.startsWith('ONEY') && normalizedBl.length > 4) {
+    return normalizedBl.slice(4)
+  }
+
+  return normalizedBl.length > 12 ? normalizedBl.slice(-12) : normalizedBl
+}
+
+function normalizeEvergreenBl(blNo) {
+  const normalizedBl = normalizeString(blNo).toUpperCase()
+
+  if (normalizedBl.startsWith('EGLV') && normalizedBl.length > 4) {
     return normalizedBl.slice(4)
   }
 
