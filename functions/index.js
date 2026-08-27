@@ -25,6 +25,7 @@ const carrierPrefixMap = [
   { carrier: 'ONE', prefixes: ['ONEY', 'BRDG'] },
   { carrier: 'EVERGREEN', prefixes: ['EGLV', 'EGSU', 'EGHU'] },
   { carrier: 'PIL', prefixes: ['SUB', 'PIL'] },
+  { caerrier: 'MAERSK', prefixes: ['MAEU', 'MAEU', 'MAHU', 'MAAU'] },
 ]
 
 const defaultHeaders = {
@@ -695,6 +696,8 @@ async function scrapeLiveTracking({ blNo, carrier }) {
       return scrapeEvergreen(blNo)
     case 'PIL':
       return scrapePil(blNo)
+    case 'MAERSK':
+      return scrapeMaersk(blNo)
     default:
       return {
         source: 'firestore',
@@ -702,6 +705,7 @@ async function scrapeLiveTracking({ blNo, carrier }) {
       }
   }
 }
+
 
 async function scrapeMsc(blNo) {
  var response =  await axios.post(
@@ -789,44 +793,82 @@ async function scrapeEvergreen(blNo) {
 
 async function scrapePil(blNo) {
   const getN = await axios.get(
-    'https://www.pilship.com/wp-content/themes/hello-theme-child-master/pil-api/common/get-n.php?',
+    'https://www.pilship.com/wp-content/themes/hello-theme-child-master/pil-api/common/get-n.php',
     {
       params: {
         timestamp: Date.now(),
       },
       timeout: HTTP_TIMEOUT_MS,
-      headers: { ...defaultHeaders,
-          'Referer': 'https://www.pilship.com/digital-solutions/?tab=customer&id=track-trace&label=containerTandT&module=TrackTraceBL&refNo=' + blNo,
-      }
-    },
+      headers: {
+        ...defaultHeaders,
+        Referer:
+          `https://www.pilship.com/digital-solutions/?tab=customer&id=track-trace&label=containerTandT&module=TrackTraceBL&refNo=${blNo}`,
+      },
+    }
   )
+
   const nValue = getN.data?.n
-  console.log(`Obtained n value for PIL tracking: ${nValue} (BL: ${blNo})`)
-  const response = await axios.get('https://www.pilship.com/wp-content/themes/hello-theme-child-master/pil-api/trackntrace-containertnt.php?', {
-     params: {
+
+  const blResponse = await axios.get(
+    'https://www.pilship.com/wp-content/themes/hello-theme-child-master/pil-api/trackntrace-containertnt.php',
+    {
+      params: {
         module: 'TrackTraceBL',
-        'refNo': blNo,
-        'n': nValue,
+        refNo: blNo,
+        n: nValue,
         timestamp: Date.now(),
       },
       timeout: HTTP_TIMEOUT_MS,
-      headers:{ ...defaultHeaders,
-          'Referer': 'https://www.pilship.com/digital-solutions/?tab=customer&id=track-trace&label=containerTandT&module=TrackTraceBL&refNo=' + blNo,
-      } 
-  })
+      headers: {
+        ...defaultHeaders,
+        Referer:
+          `https://www.pilship.com/digital-solutions/?tab=customer&id=track-trace&label=containerTandT&module=TrackTraceBL&refNo=${blNo}`,
+      },
+    }
+  )
 
+  const containers = extractPilContainers(blResponse.data)
 
-  console.log(`Raw PIL response for ${blNo}:`, response.data)
+  if (!containers.length) {
+    return extractTrackingPayload({
+      carrier: 'PIL',
+      payload: blResponse.data,
+      blNo,
+    })
+  }
 
+  const results = []
 
+  for (const cntrNo of containers) {
+    const cntrResponse = await axios.get(
+      'https://www.pilship.com/wp-content/themes/hello-theme-child-master/pil-api/trackntrace-containertnt-trace.php',
+      {
+        params: {
+          module: 'TrackTraceBL',
+          reference_no: blNo,
+          cntr_no: cntrNo,
+          n: nValue,
+          timestamp: Date.now(),
+        },
+        timeout: HTTP_TIMEOUT_MS,
+        headers: {
+          ...defaultHeaders,
+          Referer:
+            `https://www.pilship.com/digital-solutions/?tab=customer&id=track-trace&label=containerTandT&module=TrackTraceBL&refNo=${blNo}`,
+        },
+      }
+    )
 
-  return extractTrackingPayload({
-    carrier: 'PIL',
-    payload: response.data,
-    blNo,
-  })
+    results.push(
+      extractPilContainerTracking(
+        cntrResponse.data,
+        blNo,
+        cntrNo
+      )
+    )
+  }
+return results
 }
-
 function normalizeEvents(events) {
   return (Array.isArray(events) ? events : [])
     .map((event, index) => {

@@ -254,6 +254,99 @@ function extractPilTracking(payload, blNo) {
   }
 }
 
+function extractPilContainers(payload) {
+  const normalizedPayload = parsePotentialJson(payload)
+  const html = normalizedPayload?.data || ''
+
+  if (!html) return []
+
+  const $ = load(html)
+  const containers = new Set()
+
+  $('.next-location').each((_, el) => {
+    const text = $(el)
+      .text()
+      .replace(/\s+/g, ' ')
+      .trim()
+
+    const match = text.match(/[A-Z]{4}\d{7}/)
+
+    if (match) {
+      containers.add(match[0])
+    }
+  })
+
+  return [...containers]
+}
+
+
+function extractPilContainerTracking(payload, blNo, cntrNo) {
+  const normalizedPayload = parsePotentialJson(payload)
+  const html = normalizedPayload?.data || ''
+
+  if (!html) {
+    return {
+      source: 'PIL',
+      eta: null,
+      events: [],
+      trackingNumber: cntrNo,
+      blNo,
+    }
+  }
+
+  const $ = load(html)
+
+  let eta = null
+  const events = []
+
+  $('tr.bg-lightblue').each((index, row) => {
+    const cells = $(row).find('td')
+
+    if (cells.length < 6) return
+
+    const eventDate = $(cells[3])
+      .text()
+      .replace(/\*/g, '')
+      .trim()
+
+    const eventName = $(cells[4])
+      .text()
+      .trim()
+
+    const location = $(cells[5])
+      .text()
+      .trim()
+
+    if (!eventName) return
+
+    const parsedDate =
+      eventDate !== 'Information Not Available'
+        ? parseDateCandidate(eventDate)
+        : null
+
+    events.push({
+      id: `pil-cntr-${index}`,
+      title: eventName,
+      location,
+      occurredAt: parsedDate,
+    })
+
+    if (
+      eventName === 'Vessel Discharge' &&
+      parsedDate
+    ) {
+      eta = parsedDate
+    }
+  })
+
+  return {
+    source: 'PIL',
+    eta,
+    events,
+    trackingNumber: cntrNo,
+    blNo,
+  }
+}
 
 function extractGenericTrackingObject(source, payload, blNo) {
   return {
