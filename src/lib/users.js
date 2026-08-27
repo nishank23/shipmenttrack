@@ -13,6 +13,7 @@ export async function ensureUserDocument(user) {
     return
   }
 
+  
   await setDoc(userRef, {
     name: user.displayName ?? '',
     email: user.email ?? '',
