@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import ProtectedRoute from './components/ProtectedRoute'
+import Archive from './pages/Archive'
 import Dashboard from './pages/Dashboard'
 import Login from './pages/Login'
 import Profile from './pages/Profile'
@@ -14,6 +15,7 @@ function App() {
 
       <Route element={<ProtectedRoute />}>
         <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/archive" element={<Archive />} />
         <Route path="/profile" element={<Profile />} />
         <Route path="/add" element={<ShipmentForm />} />
         <Route path="/edit/:shipmentId" element={<ShipmentForm />} />

@@ -3,10 +3,15 @@ import { createTransport } from 'nodemailer'
 import { initializeApp, applicationDefault, cert }  from 'firebase-admin/app'
 import { getFirestore, Timestamp , FieldValue, Filter } from 'firebase-admin/firestore'
 import { info, error as _error, warn } from 'firebase-functions/logger'
-import { onRequest } from 'firebase-functions/v2/https'
+import { HttpsError, onCall, onRequest } from 'firebase-functions/v2/https'
 import { defineSecret } from 'firebase-functions/params'
 import { onSchedule } from 'firebase-functions/v2/scheduler'
-import { extractTrackingPayload } from './lib/trackingExtractors.js'
+import {
+  extractTrackingPayload,
+  extractPilContainers,
+  extractPilContainerTracking,
+  mergeTrackingResults,
+} from './lib/trackingExtractors.js'
 
 initializeApp();
 
@@ -14,6 +19,8 @@ initializeApp();
 const db = getFirestore();
 const SMTP_EMAIL = defineSecret('SMTP_EMAIL')
 const SMTP_PASSWORD = defineSecret('SMTP_PASSWORD')
+const TRACKING_SECRETS = [SMTP_EMAIL, SMTP_PASSWORD]
+const MAX_STORED_EVENTS = 200
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000
 const HTTP_TIMEOUT_MS = 15000
@@ -25,8 +32,9 @@ const carrierPrefixMap = [
   { carrier: 'ONE', prefixes: ['ONEY', 'BRDG'] },
   { carrier: 'EVERGREEN', prefixes: ['EGLV', 'EGSU', 'EGHU'] },
   { carrier: 'PIL', prefixes: ['SUB', 'PIL'] },
-  { caerrier: 'MAERSK', prefixes: ['MAEU', 'MAEU', 'MAHU', 'MAAU'] },
 ]
+
+const LIVE_TRACKING_CARRIERS = new Set(carrierPrefixMap.map((entry) => entry.carrier))
 
 const defaultHeaders = {
   'user-agent':
@@ -62,7 +70,7 @@ export const dailyShipmentCheck = onSchedule(
     schedule: '0 8 * * *',
     timeZone: MAPUTO_TIMEZONE,
     timeoutSeconds: 540,
-    secrets: [SMTP_EMAIL, SMTP_PASSWORD],
+    secrets: TRACKING_SECRETS,
   },
   async () => {
     const summary = await runShipmentCheck({
@@ -77,7 +85,7 @@ export const dailyShipmentCheck = onSchedule(
 export const manualCheck = onRequest(
   {
     timeoutSeconds: 540,
-    secrets: [SMTP_EMAIL, SMTP_PASSWORD],
+    secrets: TRACKING_SECRETS,
   },
   async (request, response) => {
     if (!['GET', 'POST'].includes(request.method)) {
@@ -118,6 +126,252 @@ export const manualCheck = onRequest(
     }
   },
 )
+
+/**
+ * Signed-in users look up live tracking for a B/L.
+ *
+ * - Without shipmentId: preview only (used while filling the add/edit form).
+ * - With shipmentId: also stores events on that shipment. ETA is never written
+ *   here, because the ETA is user-editable on the form; events are server-owned.
+ */
+export const lookupTracking = onCall(
+  {
+    timeoutSeconds: 120,
+  },
+  async (request) => {
+    const uid = request.auth?.uid
+
+    if (!uid) {
+      throw new HttpsError('unauthenticated', 'Sign in to look up tracking.')
+    }
+
+    const blNo = normalizeString(request.data?.blNo).toUpperCase().replace(/\s+/g, '')
+    const shipmentId = normalizeString(request.data?.shipmentId)
+
+    if (!/^[A-Z0-9-]{4,40}$/.test(blNo)) {
+      throw new HttpsError('invalid-argument', 'Enter a valid B/L number.')
+    }
+
+    const carrier =
+      detectCarrierFromBl(blNo) || normalizeString(request.data?.carrier).toUpperCase()
+
+    if (!LIVE_TRACKING_CARRIERS.has(carrier)) {
+      throw new HttpsError(
+        'failed-precondition',
+        'Live tracking is not available for this carrier.',
+      )
+    }
+
+    let shipmentRef = null
+
+    if (shipmentId) {
+      shipmentRef = db.collection('shipments').doc(shipmentId)
+      const shipmentSnapshot = await shipmentRef.get()
+
+      if (!shipmentSnapshot.exists || shipmentSnapshot.data()?.uid !== uid) {
+        throw new HttpsError('permission-denied', 'Shipment not found.')
+      }
+    }
+
+    let liveResult
+
+    try {
+      liveResult = await scrapeLiveTracking({ blNo, carrier })
+    } catch (error) {
+      warn(`Tracking lookup failed for ${blNo}`, error)
+
+      if (shipmentRef) {
+        await shipmentRef.set(
+          {
+            trackingStatus: 'error',
+            trackingError: error.message || 'Tracking failed',
+          },
+          { merge: true },
+        )
+      }
+
+      throw new HttpsError('unavailable', 'The carrier did not return tracking data. Try again later.')
+    }
+
+    const events = normalizeEvents(liveResult.events).slice(-MAX_STORED_EVENTS)
+    const latestEvent = getLatestEvent(events)
+    const eta = normalizeDate(liveResult.eta)
+
+    if (shipmentRef) {
+      await Promise.all([
+        db.collection('tracking_cache').doc(shipmentId).set(
+          {
+            shipmentId,
+            blNo,
+            carrier,
+            latestEta: eta ? Timestamp.fromDate(eta) : null,
+            checkedAt: Timestamp.now(),
+            expiresAt: Timestamp.fromMillis(Date.now() + CACHE_TTL_MS),
+            status: eta ? 'live' : 'fallback',
+            source: liveResult.source || carrier,
+            events,
+            eventCount: events.length,
+            error: null,
+          },
+          { merge: true },
+        ),
+        shipmentRef.set(
+          {
+            latestEvent: latestEvent || null,
+            eventCount: events.length,
+            trackingStatus: 'live',
+            trackingError: null,
+          },
+          { merge: true },
+        ),
+      ])
+    }
+
+    const importComplete = isImportComplete(events)
+    let archived = false
+
+    if (shipmentRef && importComplete) {
+      const shipmentData = (await shipmentRef.get()).data() || {}
+
+      if (!shipmentData.autoArchiveDisabled) {
+        archived = await moveShipmentToArchive(shipmentId, {
+          reason: 'empty-returned',
+          archivedBy: 'system',
+        })
+      }
+    }
+
+    return {
+      carrier,
+      eta: eta ? eta.toISOString() : null,
+      importComplete,
+      archived,
+      eventCount: events.length,
+      latestEvent: latestEvent
+        ? {
+            title: latestEvent.title,
+            location: latestEvent.location,
+            container: latestEvent.container,
+            occurredAt: latestEvent.occurredAt
+              ? latestEvent.occurredAt.toDate().toISOString()
+              : null,
+          }
+        : null,
+    }
+  },
+)
+
+/**
+ * Manually archive or restore one of the caller's shipments.
+ * Archived shipments live in archived_shipments/{sameId}; tracking_cache/{id}
+ * is kept so the timeline stays available.
+ */
+export const setShipmentArchived = onCall(async (request) => {
+  const uid = request.auth?.uid
+
+  if (!uid) {
+    throw new HttpsError('unauthenticated', 'Sign in to manage shipments.')
+  }
+
+  const shipmentId = normalizeString(request.data?.shipmentId)
+  const archived = request.data?.archived === true
+
+  if (!shipmentId) {
+    throw new HttpsError('invalid-argument', 'shipmentId is required.')
+  }
+
+  const moved = archived
+    ? await moveShipmentToArchive(shipmentId, { reason: 'manual', archivedBy: uid, uid })
+    : await restoreShipmentFromArchive(shipmentId, { uid })
+
+  if (!moved) {
+    throw new HttpsError('not-found', 'Shipment not found.')
+  }
+
+  return { shipmentId, archived }
+})
+
+const EMPTY_RETURN_PATTERN = /\bempty\b.*\b(received|returned|return)\b/i
+
+/**
+ * Import is finished when every container's most recent actual event is an
+ * empty-container return (e.g. MSC "Empty received at CY").
+ */
+function isImportComplete(events) {
+  const actualEvents = (Array.isArray(events) ? events : []).filter(
+    (event) => event?.occurredAt && !event.estimated,
+  )
+
+  if (actualEvents.length === 0) {
+    return false
+  }
+
+  const latestByContainer = new Map()
+
+  actualEvents.forEach((event) => {
+    latestByContainer.set(event.container || 'bl', event)
+  })
+
+  // Ignore B/L-level rows when container-level events exist.
+  if (latestByContainer.size > 1) {
+    latestByContainer.delete('bl')
+  }
+
+  return Array.from(latestByContainer.values()).every((event) =>
+    EMPTY_RETURN_PATTERN.test(event.title),
+  )
+}
+
+/**
+ * Atomically moves shipments/{id} to archived_shipments/{id}.
+ * Pass uid to require ownership. Resolves false when there is nothing to move.
+ */
+async function moveShipmentToArchive(shipmentId, { reason, archivedBy, uid }) {
+  const shipmentRef = db.collection('shipments').doc(shipmentId)
+  const archiveRef = db.collection('archived_shipments').doc(shipmentId)
+
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(shipmentRef)
+
+    if (!snapshot.exists || (uid && snapshot.data()?.uid !== uid)) {
+      return false
+    }
+
+    transaction.set(archiveRef, {
+      ...snapshot.data(),
+      archivedAt: FieldValue.serverTimestamp(),
+      archiveReason: reason,
+      archivedBy,
+    })
+    transaction.delete(shipmentRef)
+    return true
+  })
+}
+
+async function restoreShipmentFromArchive(shipmentId, { uid }) {
+  const shipmentRef = db.collection('shipments').doc(shipmentId)
+  const archiveRef = db.collection('archived_shipments').doc(shipmentId)
+
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(archiveRef)
+
+    if (!snapshot.exists || snapshot.data()?.uid !== uid) {
+      return false
+    }
+
+    // eslint-disable-next-line no-unused-vars
+    const { archivedAt, archiveReason, archivedBy, ...shipmentData } = snapshot.data()
+
+    transaction.set(shipmentRef, {
+      ...shipmentData,
+      // The user brought it back on purpose: don't auto-archive it again.
+      autoArchiveDisabled: true,
+      restoredAt: FieldValue.serverTimestamp(),
+    })
+    transaction.delete(archiveRef)
+    return true
+  })
+}
 
 async function runShipmentCheck({ uid = '', forceRefresh = true, sendEmails = true }) {
   const users = await getUserDocs(uid)
@@ -311,6 +565,11 @@ async function processUserShipments(userDoc, { forceRefresh, sendEmails, transpo
 
     allProcessedShipments.push(shipment)
 
+    // Import finished (empty container returned): no more alerts.
+    if (shipment.archived) {
+      continue
+    }
+
     /**
      * PRIORITY 1:
      * ETA changed email
@@ -415,6 +674,7 @@ async function processUserShipments(userDoc, { forceRefresh, sendEmails, transpo
         : null,
       etaChanged: shipment.etaChanged || false,
       etaSource: shipment.etaSource,
+      archived: shipment.archived,
       daysRemaining: shipment.daysRemaining,
     })),
   }
@@ -459,7 +719,7 @@ async function buildShipmentAlertRecord(shipmentDoc, { forceRefresh }) {
     previousEta: null,
   }
 
-  if (detectCarrierFromBl(blNo)) {
+  if (LIVE_TRACKING_CARRIERS.has(carrier.toUpperCase())) {
     tracking = await resolveTrackingInfo({
       shipmentId: shipmentDoc.id,
       blNo,
@@ -470,9 +730,22 @@ async function buildShipmentAlertRecord(shipmentDoc, { forceRefresh }) {
   }
 
   const eta = tracking.eta || firestoreEta
+  let archived = false
+
+  if (tracking.importComplete && !shipment.autoArchiveDisabled) {
+    try {
+      archived = await moveShipmentToArchive(shipmentDoc.id, {
+        reason: 'empty-returned',
+        archivedBy: 'system',
+      })
+    } catch (archiveError) {
+      warn(`Auto-archive failed for ${blNo}`, archiveError)
+    }
+  }
 
   return {
     id: shipmentDoc.id,
+    archived,
 
     invoiceNo: normalizeString(
       shipment.invoiceNo ||
@@ -525,7 +798,7 @@ async function resolveTrackingInfo({ shipmentId, blNo, carrier, firestoreEta, fo
 
   if (!forceRefresh && isFreshLiveCache(cachedData)) {
     return {
-      eta: normalizeDate(cachedData.eta),
+      eta: normalizeDate(cachedData.latestEta),
       etaSource: 'live-cache',
       etaChanged:false,
     }
@@ -536,7 +809,6 @@ async function resolveTrackingInfo({ shipmentId, blNo, carrier, firestoreEta, fo
       blNo,
       carrier,
     })
-    console.log(`Live tracking result for ${blNo}:`, liveResult)
     const liveEta = normalizeDate(liveResult.eta || firestoreEta)
     const previousEta = currentShipmentEta
     const etaChanged = 
@@ -544,11 +816,16 @@ async function resolveTrackingInfo({ shipmentId, blNo, carrier, firestoreEta, fo
       liveEta &&
       previousEta.getTime() !== liveEta.getTime()
 
-    
-    console.log(`Shipment ${shipmentId}`)
-    console.log('Previous ETA:', previousEta)
-    console.log('Live ETA:', liveEta)
-    console.log('ETA Changed:', etaChanged)
+    const events = normalizeEvents(liveResult.events).slice(-MAX_STORED_EVENTS)
+    const latestEvent = getLatestEvent(events)
+
+    info(`Tracked ${blNo}`, {
+      shipmentId,
+      previousEta,
+      liveEta,
+      etaChanged,
+      eventCount: events.length,
+    })
 
 
     /**
@@ -595,6 +872,12 @@ async function resolveTrackingInfo({ shipmentId, blNo, carrier, firestoreEta, fo
           etaChanged ? 1 : 0
         ),
         lastEtaSyncAt: Timestamp.now(),
+
+        // Denormalized so the dashboard can show status without reading the cache.
+        latestEvent: latestEvent || null,
+        eventCount: events.length,
+        trackingStatus: 'live',
+        trackingError: null,
       },
       { merge: true },
     )
@@ -629,6 +912,8 @@ async function resolveTrackingInfo({ shipmentId, blNo, carrier, firestoreEta, fo
           : 'fallback',
 
         source: liveResult.source || 'unknown',
+        events,
+        eventCount: events.length,
         error: null,
       },
       { merge: true }
@@ -639,6 +924,7 @@ async function resolveTrackingInfo({ shipmentId, blNo, carrier, firestoreEta, fo
       etaSource: liveResult.eta ? 'live' : 'firestore',
       etaChanged,
       previousEta,
+      importComplete: isImportComplete(events),
     }
   } catch (error) {
     warn(`Tracking scrape failed for ${blNo}`, error)
@@ -665,6 +951,15 @@ async function resolveTrackingInfo({ shipmentId, blNo, carrier, firestoreEta, fo
       { merge: true }
     )
 
+    await shipmentRef.set(
+      {
+        trackingStatus: 'error',
+        trackingError: error.message || 'Tracking failed',
+        lastEtaSyncAt: Timestamp.now(),
+      },
+      { merge: true },
+    )
+
     return {
       eta: currentShipmentEta || firestoreEta,
       etaSource: 'firestore',
@@ -674,18 +969,18 @@ async function resolveTrackingInfo({ shipmentId, blNo, carrier, firestoreEta, fo
 }
 
 function isFreshLiveCache(cacheData) {
-  if (!cacheData || cacheData.status !== 'live') {
+  if (!cacheData || !['live', 'eta-changed'].includes(cacheData.status)) {
     return false
   }
 
   const expiresAt = normalizeDate(cacheData.expiresAt)
-  const eta = normalizeDate(cacheData.eta)
+  const eta = normalizeDate(cacheData.latestEta)
 
   return Boolean(expiresAt && eta && expiresAt.getTime() > Date.now())
 }
 
 async function scrapeLiveTracking({ blNo, carrier }) {
-  const detectedCarrier = detectCarrierFromBl(blNo) || carrier
+  const detectedCarrier = detectCarrierFromBl(blNo) || normalizeString(carrier).toUpperCase()
 
   switch (detectedCarrier) {
     case 'MSC':
@@ -696,8 +991,6 @@ async function scrapeLiveTracking({ blNo, carrier }) {
       return scrapeEvergreen(blNo)
     case 'PIL':
       return scrapePil(blNo)
-    case 'MAERSK':
-      return scrapeMaersk(blNo)
     default:
       return {
         source: 'firestore',
@@ -867,22 +1160,44 @@ async function scrapePil(blNo) {
       )
     )
   }
-return results
+
+  return mergeTrackingResults('PIL', blNo, results)
 }
+
 function normalizeEvents(events) {
   return (Array.isArray(events) ? events : [])
     .map((event, index) => {
       const occurredAt = normalizeDate(event?.occurredAt)
+      const title = normalizeString(event?.title || 'Status update')
 
       return {
         id: normalizeString(event?.id || `event-${index}`),
-        title: normalizeString(event?.title || 'Status update'),
+        title,
         description: normalizeString(event?.description || ''),
         location: normalizeString(event?.location || ''),
+        container: normalizeString(event?.container || ''),
         occurredAt: occurredAt ? Timestamp.fromDate(occurredAt) : null,
+        // Carrier timelines mix actual and planned moves. Future dates are planned,
+        // and so are forecast rows (e.g. MSC "Estimated Time of Arrival") even
+        // after their date has passed.
+        estimated:
+          isForecastEventTitle(title) ||
+          Boolean(occurredAt && occurredAt.getTime() > Date.now()),
       }
     })
     .filter((event) => event.title)
+}
+
+function isForecastEventTitle(title) {
+  return /\b(estimated|expected|planned|ETA|ETD)\b/i.test(title)
+}
+
+/**
+ * Most recent event that has actually happened (not a planned future move).
+ */
+function getLatestEvent(events) {
+  const actualEvents = events.filter((event) => event.occurredAt && !event.estimated)
+  return actualEvents.length > 0 ? actualEvents[actualEvents.length - 1] : null
 }
 
 function normalizeDate(value) {

@@ -3,14 +3,8 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { deleteDoc, doc, getDoc } from 'firebase/firestore'
 import { db } from '../../firebase'
 import useAuth from '../hooks/useAuth'
-
-const carrierBadgeStyles = {
-  MSC: 'bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-200',
-  ONE: 'bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-200',
-  EVERGREEN:
-    'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200',
-  PIL: 'bg-orange-100 text-orange-700 dark:bg-orange-500/15 dark:text-orange-200',
-}
+import { getCarrierBadgeClass, getCarrierLabel } from '../lib/carriers'
+import { describeArchiveReason, setShipmentArchived } from '../lib/tracking'
 
 const dateFormatter = new Intl.DateTimeFormat('en-US', {
   month: 'short',
@@ -104,13 +98,6 @@ function formatAmount(value) {
   return Number.isNaN(sanitizedValue) ? '—' : currencyFormatter.format(sanitizedValue)
 }
 
-function getCarrierBadgeClass(carrier) {
-  return (
-    carrierBadgeStyles[String(carrier).trim().toUpperCase()] ??
-    'bg-slate-100 text-slate-700 dark:bg-white/10 dark:text-slate-200'
-  )
-}
-
 function extractTimelineEvents(cacheData) {
   const rawEvents = Array.isArray(cacheData?.events)
     ? cacheData.events
@@ -157,11 +144,137 @@ function extractTimelineEvents(cacheData) {
         title,
         description: event?.description ?? event?.message ?? event?.details ?? '',
         location: event?.location ?? event?.port ?? event?.place ?? '',
+        container: event?.container ?? '',
+        estimated:
+          event?.estimated ?? Boolean(occurredAt && occurredAt.getTime() > Date.now()),
         occurredAt,
         sortValue: occurredAt ? occurredAt.getTime() : index,
       }
     })
     .sort((left, right) => left.sortValue - right.sortValue)
+}
+
+const RECENT_EVENT_COUNT = 4
+
+/**
+ * One foldable group per container (plus one for B/L-level events),
+ * ordered so the container with the most recent activity comes first.
+ */
+function groupTimelineEvents(events) {
+  const groups = new Map()
+
+  events.forEach((event) => {
+    const key = event.container || 'bl'
+
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        label: event.container || 'Shipment',
+        events: [],
+      })
+    }
+
+    groups.get(key).events.push(event)
+  })
+
+  return Array.from(groups.values())
+    .map((group) => {
+      const actualEvents = group.events.filter((event) => !event.estimated)
+      const latestEvent = actualEvents[actualEvents.length - 1] ?? null
+
+      return {
+        ...group,
+        latestEvent,
+        sortValue: latestEvent?.occurredAt ? latestEvent.occurredAt.getTime() : 0,
+      }
+    })
+    .sort((left, right) => right.sortValue - left.sortValue)
+}
+
+function TimelineGroup({ group, defaultOpen }) {
+  const [showAll, setShowAll] = useState(false)
+  const actualEvents = group.events.filter((event) => !event.estimated)
+  const plannedEvents = group.events.filter((event) => event.estimated)
+  const hiddenCount = Math.max(actualEvents.length - RECENT_EVENT_COUNT, 0)
+  const shownEvents = showAll
+    ? group.events
+    : [...actualEvents.slice(-RECENT_EVENT_COUNT), ...plannedEvents]
+
+  return (
+    <details
+      open={defaultOpen}
+      className="group rounded-2xl border border-slate-200/70 bg-white dark:border-white/10 dark:bg-slate-950/70"
+    >
+      <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
+        <span
+          aria-hidden="true"
+          className="text-xs text-slate-400 transition group-open:rotate-90"
+        >
+          ▶
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold text-slate-950 dark:text-white">
+            {group.label}
+          </p>
+          <p className="truncate text-xs text-slate-500 dark:text-slate-400">
+            {group.latestEvent
+              ? `${group.latestEvent.title} · ${formatDateTime(group.latestEvent.occurredAt)}`
+              : 'Planned moves only'}
+          </p>
+        </div>
+        <span className="shrink-0 rounded-full border border-slate-200 px-2 py-0.5 text-[11px] font-medium text-slate-600 dark:border-white/10 dark:text-slate-300">
+          {group.events.length}
+        </span>
+      </summary>
+
+      <div className="border-t border-slate-200/70 px-4 pt-3 pb-4 dark:border-white/10">
+        {hiddenCount > 0 ? (
+          <button
+            type="button"
+            onClick={() => setShowAll((current) => !current)}
+            className="mb-3 text-xs font-medium text-sky-600 hover:underline dark:text-sky-300"
+          >
+            {showAll
+              ? 'Show recent only'
+              : `Show ${hiddenCount} earlier event${hiddenCount === 1 ? '' : 's'}`}
+          </button>
+        ) : null}
+
+        <ol className="relative space-y-3 border-l border-slate-200 pl-4 dark:border-white/10">
+          {shownEvents.map((event) => (
+            <li key={event.id} className="relative">
+              <span
+                aria-hidden="true"
+                className={`absolute top-1.5 -left-[21px] h-2.5 w-2.5 rounded-full ${
+                  event.estimated
+                    ? 'border-2 border-sky-500 bg-white dark:bg-slate-950'
+                    : 'bg-sky-500'
+                }`}
+              />
+              <div className="flex items-start justify-between gap-3">
+                <p className="text-sm font-medium text-slate-900 dark:text-white">
+                  {event.title}
+                  {event.estimated ? (
+                    <span className="ml-2 rounded-full bg-amber-50 px-2 py-0.5 align-middle text-[11px] font-medium text-amber-700 dark:bg-amber-500/15 dark:text-amber-200">
+                      Planned
+                    </span>
+                  ) : null}
+                </p>
+                <p className="shrink-0 text-xs text-slate-500 dark:text-slate-400">
+                  {formatDateTime(event.occurredAt)}
+                </p>
+              </div>
+              {event.location || event.description ? (
+                <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                  {[event.location, event.description].filter(Boolean).join(' · ')}
+                </p>
+              ) : null}
+            </li>
+          ))}
+        </ol>
+      </div>
+    </details>
+  )
 }
 
 function DetailItem({ label, children }) {
@@ -183,9 +296,12 @@ function ShipmentDetail() {
   const { currentUser } = useAuth()
   const [shipment, setShipment] = useState(null)
   const [timelineEvents, setTimelineEvents] = useState([])
+  const [trackingMeta, setTrackingMeta] = useState(null)
   const [error, setError] = useState('')
   const [isLoading, setIsLoading] = useState(true)
   const [isDeleting, setIsDeleting] = useState(false)
+  const [isArchiving, setIsArchiving] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
 
   useEffect(() => {
     if (!shipmentId || !currentUser?.uid) {
@@ -200,8 +316,14 @@ function ShipmentDetail() {
       setError('')
 
       try {
-        const shipmentRef = doc(db, 'shipments', shipmentId)
-        const shipmentSnapshot = await getDoc(shipmentRef)
+        let shipmentSnapshot = await getDoc(doc(db, 'shipments', shipmentId))
+        let isArchived = false
+
+        // Not active: it may have been moved to the archive.
+        if (!shipmentSnapshot.exists()) {
+          shipmentSnapshot = await getDoc(doc(db, 'archived_shipments', shipmentId))
+          isArchived = true
+        }
 
         if (!shipmentSnapshot.exists()) {
           throw new Error('Shipment not found.')
@@ -217,30 +339,30 @@ function ShipmentDetail() {
         const shipmentRecord = {
           id: shipmentSnapshot.id,
           ...shipmentData,
+          isArchived,
         }
 
         if (isMounted) {
           setShipment(shipmentRecord)
         }
 
-        const trackingKey = String(
-          shipmentData.blNo ?? shipmentData.blNumber ?? '',
-        ).trim()
-
-        if (!trackingKey) {
-          if (isMounted) {
-            setTimelineEvents([])
-          }
-          return
-        }
-
-        const trackingSnapshot = await getDoc(doc(db, 'tracking_cache', trackingKey))
+        // The tracking function writes tracking_cache/{shipmentId}.
+        const trackingSnapshot = await getDoc(
+          doc(db, 'tracking_cache', shipmentSnapshot.id),
+        )
+        const trackingData = trackingSnapshot.exists() ? trackingSnapshot.data() : null
 
         if (isMounted) {
-          setTimelineEvents(
-            trackingSnapshot.exists()
-              ? extractTimelineEvents(trackingSnapshot.data())
-              : [],
+          setTimelineEvents(extractTimelineEvents(trackingData))
+          setTrackingMeta(
+            trackingData
+              ? {
+                  status: trackingData.status ?? '',
+                  source: trackingData.source ?? '',
+                  checkedAt: trackingData.checkedAt ?? null,
+                  error: trackingData.error ?? '',
+                }
+              : null,
           )
         }
       } catch (loadError) {
@@ -254,6 +376,7 @@ function ShipmentDetail() {
           )
           setShipment(null)
           setTimelineEvents([])
+          setTrackingMeta(null)
         }
       } finally {
         if (isMounted) {
@@ -267,7 +390,39 @@ function ShipmentDetail() {
     return () => {
       isMounted = false
     }
-  }, [currentUser?.uid, navigate, shipmentId])
+  }, [currentUser?.uid, navigate, shipmentId, reloadKey])
+
+  const handleArchiveToggle = async () => {
+    if (!shipment?.id) {
+      return
+    }
+
+    const archiving = !shipment.isArchived
+
+    if (
+      archiving &&
+      !window.confirm('Move this shipment to the archive? You can restore it later.')
+    ) {
+      return
+    }
+
+    setError('')
+    setIsArchiving(true)
+
+    try {
+      await setShipmentArchived(shipment.id, archiving)
+      setReloadKey((current) => current + 1)
+    } catch (archiveError) {
+      console.error('Failed to update archive state.', archiveError)
+      setError(
+        archiving
+          ? 'Shipment could not be archived. Please try again.'
+          : 'Shipment could not be restored. Please try again.',
+      )
+    } finally {
+      setIsArchiving(false)
+    }
+  }
 
   const handleDelete = async () => {
     if (!shipment?.id) {
@@ -286,8 +441,10 @@ function ShipmentDetail() {
     setIsDeleting(true)
 
     try {
-      await deleteDoc(doc(db, 'shipments', shipment.id))
-      navigate('/dashboard', { replace: true })
+      await deleteDoc(
+        doc(db, shipment.isArchived ? 'archived_shipments' : 'shipments', shipment.id),
+      )
+      navigate(shipment.isArchived ? '/archive' : '/dashboard', { replace: true })
     } catch (deleteError) {
       console.error('Failed to delete shipment.', deleteError)
       setError('Shipment could not be deleted. Please try again.')
@@ -340,6 +497,7 @@ function ShipmentDetail() {
       ? [shipment.containerNumbers]
       : []
   const daysLeft = getDayDifference(shipment.eta)
+  const timelineGroups = groupTimelineEvents(timelineEvents)
 
   return (
     <main className="mx-auto min-h-screen w-full max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
@@ -364,12 +522,22 @@ function ShipmentDetail() {
             >
               Back to dashboard
             </Link>
-            <Link
-              to={`/edit/${shipment.id}`}
-              className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:text-slate-100 dark:hover:bg-white/10"
+            {shipment.isArchived ? null : (
+              <Link
+                to={`/edit/${shipment.id}`}
+                className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:text-slate-100 dark:hover:bg-white/10"
+              >
+                Edit
+              </Link>
+            )}
+            <button
+              type="button"
+              onClick={handleArchiveToggle}
+              disabled={isArchiving}
+              className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-70 dark:border-white/10 dark:bg-white/5 dark:text-slate-100 dark:hover:bg-white/10"
             >
-              Edit
-            </Link>
+              {isArchiving ? 'Working...' : shipment.isArchived ? 'Restore' : 'Archive'}
+            </button>
             <button
               type="button"
               onClick={handleDelete}
@@ -380,6 +548,14 @@ function ShipmentDetail() {
             </button>
           </div>
         </div>
+
+        {shipment.isArchived ? (
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 dark:border-white/10 dark:bg-white/5 dark:text-slate-200">
+            Archived {formatEta(shipment.archivedAt)} ·{' '}
+            {describeArchiveReason(shipment.archiveReason)}. Restore it to edit or
+            track it again.
+          </div>
+        ) : null}
 
         {error ? (
           <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-100">
@@ -404,7 +580,7 @@ function ShipmentDetail() {
                   <span
                     className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${getCarrierBadgeClass(carrier)}`}
                   >
-                    {carrier}
+                    {getCarrierLabel(carrier)}
                   </span>
                 </div>
 
@@ -445,7 +621,7 @@ function ShipmentDetail() {
                   <span
                     className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${getCarrierBadgeClass(carrier)}`}
                   >
-                    {carrier}
+                    {getCarrierLabel(carrier)}
                   </span>
                 </DetailItem>
                 <DetailItem label="Consignee">{consigneeName}</DetailItem>
@@ -478,7 +654,9 @@ function ShipmentDetail() {
                     Tracking timeline
                   </p>
                   <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">
-                    Loaded from tracking_cache/{blNo}
+                    {trackingMeta?.checkedAt
+                      ? `Last checked ${formatDateTime(trackingMeta.checkedAt)}`
+                      : 'Not checked yet'}
                   </p>
                 </div>
                 <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 dark:border-white/10 dark:bg-slate-950/70 dark:text-slate-300">
@@ -486,46 +664,26 @@ function ShipmentDetail() {
                 </span>
               </div>
 
+              {trackingMeta?.error ? (
+                <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
+                  Last live check failed: {trackingMeta.error}
+                </div>
+              ) : null}
+
               {timelineEvents.length === 0 ? (
                 <div className="mt-6 rounded-3xl border border-dashed border-slate-200 bg-white/80 px-4 py-8 text-center text-sm text-slate-500 dark:border-white/10 dark:bg-slate-950/70 dark:text-slate-300">
-                  No cached tracking events found for this B/L number yet.
+                  No tracking events recorded for this shipment yet.
                 </div>
               ) : (
-                <ol className="mt-6 space-y-5">
-                  {timelineEvents.map((event, index) => (
-                    <li key={event.id} className="relative pl-8">
-                      <span className="absolute left-0 top-1.5 flex h-3.5 w-3.5 rounded-full bg-sky-500 ring-4 ring-sky-100 dark:ring-sky-500/20" />
-                      {index < timelineEvents.length - 1 ? (
-                        <span className="absolute top-5 left-[6px] h-[calc(100%+1rem)] w-px bg-slate-200 dark:bg-white/10" />
-                      ) : null}
-
-                      <div className="rounded-2xl border border-slate-200/70 bg-white p-4 dark:border-white/10 dark:bg-slate-950/70">
-                        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                          <div>
-                            <p className="text-sm font-semibold text-slate-950 dark:text-white">
-                              {event.title}
-                            </p>
-                            {event.description ? (
-                              <p className="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-300">
-                                {event.description}
-                              </p>
-                            ) : null}
-                          </div>
-
-                          <p className="text-xs text-slate-500 dark:text-slate-400">
-                            {formatDateTime(event.occurredAt)}
-                          </p>
-                        </div>
-
-                        {event.location ? (
-                          <p className="mt-3 text-xs font-medium tracking-[0.18em] text-slate-500 uppercase dark:text-slate-400">
-                            {event.location}
-                          </p>
-                        ) : null}
-                      </div>
-                    </li>
+                <div className="mt-6 space-y-3">
+                  {timelineGroups.map((group, index) => (
+                    <TimelineGroup
+                      key={group.key}
+                      group={group}
+                      defaultOpen={index === 0}
+                    />
                   ))}
-                </ol>
+                </div>
               )}
             </section>
           </div>

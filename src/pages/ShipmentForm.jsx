@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   addDoc,
@@ -10,21 +10,13 @@ import {
 } from 'firebase/firestore'
 import { db } from '../../firebase'
 import useAuth from '../hooks/useAuth'
-
-const carrierBadgeStyles = {
-  MSC: 'bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-200',
-  ONE: 'bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-200',
-  EVERGREEN:
-    'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200',
-  PIL: 'bg-orange-100 text-orange-700 dark:bg-orange-500/15 dark:text-orange-200',
-}
-
-const blCarrierMap = [
-  { prefixes: ['MEDU', 'MSDU', 'MSNU', 'MSMU', 'MSCU'], carrier: 'MSC' },
-  { prefixes: ['ONEY', 'BRDG'], carrier: 'ONE' },
-  { prefixes: ['EGLV', 'EGSU', 'EGHU'], carrier: 'EVERGREEN' },
-  { prefixes: ['SUB', 'PIL'], carrier: 'PIL' },
-]
+import {
+  carriers,
+  detectCarrierFromBlNumber,
+  getCarrierBadgeClass,
+  getCarrierLabel,
+} from '../lib/carriers'
+import { lookupTracking, supportsLiveTracking } from '../lib/tracking'
 
 const initialValues = {
   invoiceNo: '',
@@ -74,29 +66,6 @@ function createDateFromInput(value) {
   return new Date(year, month - 1, day, 12)
 }
 
-function detectCarrierFromBlNumber(value) {
-  const sanitizedValue = String(value).toUpperCase().replace(/[^A-Z0-9]/g, '')
-
-  for (const entry of blCarrierMap) {
-    const matchingPrefix = entry.prefixes.find((prefix) =>
-      sanitizedValue.startsWith(prefix),
-    )
-
-    if (matchingPrefix) {
-      return entry.carrier
-    }
-  }
-
-  return ''
-}
-
-function getCarrierBadgeClass(carrier) {
-  return (
-    carrierBadgeStyles[carrier] ??
-    'bg-slate-100 text-slate-700 dark:bg-white/10 dark:text-slate-200'
-  )
-}
-
 function validate(values) {
   const nextErrors = {}
 
@@ -125,6 +94,19 @@ function validate(values) {
   return nextErrors
 }
 
+const lookupDateFormatter = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+})
+
+const idleLookup = { status: 'idle', blNo: '', carrier: '', eta: null, latestEvent: null, eventCount: 0, error: '' }
+
+function formatLookupDate(value) {
+  const date = normalizeDate(value)
+  return date ? lookupDateFormatter.format(date) : '—'
+}
+
 function ShipmentForm() {
   const { shipmentId } = useParams()
   const navigate = useNavigate()
@@ -134,10 +116,15 @@ function ShipmentForm() {
   const [formError, setFormError] = useState('')
   const [isLoadingShipment, setIsLoadingShipment] = useState(Boolean(shipmentId))
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [lookup, setLookup] = useState(idleLookup)
+  const etaTouchedRef = useRef(false)
+  const lookupRequestRef = useRef(0)
   const isEditing = Boolean(shipmentId)
 
   useEffect(() => {
     if (!shipmentId) {
+      etaTouchedRef.current = false
+      setLookup(idleLookup)
       setValues(initialValues)
       setErrors({})
       setFormError('')
@@ -174,6 +161,22 @@ function ShipmentForm() {
         if (!isMounted) {
           return
         }
+
+        // Existing shipment: its ETA was already chosen, never auto-replace it.
+        etaTouchedRef.current = true
+        setLookup({
+          status: shipment.latestEvent ? 'done' : 'idle',
+          blNo: String(shipment.blNo ?? shipment.blNumber ?? '').trim().toUpperCase(),
+          eta: normalizeDate(shipment.currentEta ?? shipment.eta),
+          latestEvent: shipment.latestEvent
+            ? {
+                ...shipment.latestEvent,
+                occurredAt: normalizeDate(shipment.latestEvent.occurredAt),
+              }
+            : null,
+          eventCount: shipment.eventCount ?? 0,
+          error: '',
+        })
 
         setValues({
           invoiceNo: shipment.invoiceNo ?? shipment.invoiceNumber ?? '',
@@ -221,6 +224,10 @@ function ShipmentForm() {
   const handleChange = (field) => (event) => {
     const nextValue = event.target.value
 
+    if (field === 'eta') {
+      etaTouchedRef.current = true
+    }
+
     setValues((currentValues) => ({
       ...currentValues,
       [field]: nextValue,
@@ -237,12 +244,118 @@ function ShipmentForm() {
     })
   }
 
+  const runLookup = async ({ force = false, carrier: carrierOverride } = {}) => {
+    const blNo = values.blNo.trim().toUpperCase().replace(/\s+/g, '')
+    const carrier = detectCarrierFromBlNumber(blNo) || carrierOverride || values.carrier
+
+    if (!blNo) {
+      setLookup(idleLookup)
+      return
+    }
+
+    if (!supportsLiveTracking(carrier)) {
+      setLookup({ ...idleLookup, status: 'unsupported', blNo })
+      return
+    }
+
+    if (
+      !force &&
+      lookup.blNo === blNo &&
+      lookup.carrier === carrier &&
+      lookup.status !== 'error'
+    ) {
+      return
+    }
+
+    const requestId = lookupRequestRef.current + 1
+    lookupRequestRef.current = requestId
+    setLookup({ ...idleLookup, status: 'loading', blNo, carrier })
+
+    try {
+      const result = await lookupTracking({ blNo, carrier })
+
+      if (lookupRequestRef.current !== requestId) {
+        return
+      }
+
+      const carrierEta = normalizeDate(result.eta)
+
+      setLookup({
+        status: 'done',
+        blNo,
+        carrier,
+        eta: carrierEta,
+        latestEvent: result.latestEvent
+          ? { ...result.latestEvent, occurredAt: normalizeDate(result.latestEvent.occurredAt) }
+          : null,
+        eventCount: result.eventCount ?? 0,
+        error: '',
+      })
+
+      // Prefill ETA from the carrier unless the user already typed one.
+      if (carrierEta && !etaTouchedRef.current) {
+        setValues((currentValues) => ({
+          ...currentValues,
+          eta: formatDateInput(carrierEta),
+        }))
+        setErrors((currentErrors) => {
+          const nextErrors = { ...currentErrors }
+          delete nextErrors.eta
+          return nextErrors
+        })
+      }
+    } catch (lookupError) {
+      if (lookupRequestRef.current !== requestId) {
+        return
+      }
+
+      console.error('Tracking lookup failed.', lookupError)
+      setLookup({
+        ...idleLookup,
+        status: 'error',
+        blNo,
+        carrier,
+        error: lookupError?.message || 'Tracking lookup failed.',
+      })
+    }
+  }
+
   const handleBlBlur = () => {
     const detectedCarrier = detectCarrierFromBlNumber(values.blNo)
 
+    // Keep a manually chosen carrier when the B/L has no known prefix
+    // (booking refs without a carrier prefix).
+    if (detectedCarrier) {
+      setValues((currentValues) => ({
+        ...currentValues,
+        carrier: detectedCarrier,
+      }))
+    }
+
+    runLookup()
+  }
+
+  const handleCarrierSelect = (event) => {
+    const carrier = event.target.value
+
     setValues((currentValues) => ({
       ...currentValues,
-      carrier: detectedCarrier,
+      carrier,
+    }))
+
+    if (carrier) {
+      runLookup({ force: true, carrier })
+    }
+  }
+
+  const useCarrierEta = () => {
+    if (!lookup.eta) {
+      return
+    }
+
+    setValues((currentValues) => ({
+      ...currentValues,
+      eta: formatDateInput(lookup.eta),
     }))
   }
 
@@ -277,6 +390,8 @@ function ShipmentForm() {
       carrier: detectedCarrier || values.carrier || 'Unknown',
       containerNumbers,
       eta: createDateFromInput(values.eta),
+      // The ETA the user confirmed on the form is the current official ETA.
+      currentEta: createDateFromInput(values.eta),
       invAmount: values.invAmount === '' ? null : Number(values.invAmount),
       consigneeName: values.consigneeName.trim(),
       notes: values.notes.trim(),
@@ -284,12 +399,27 @@ function ShipmentForm() {
     }
 
     try {
+      let savedShipmentId = shipmentId
+
       if (isEditing) {
         await updateDoc(doc(db, 'shipments', shipmentId), shipmentPayload)
       } else {
-        await addDoc(collection(db, 'shipments'), {
+        const createdRef = await addDoc(collection(db, 'shipments'), {
           ...shipmentPayload,
           createdAt: serverTimestamp(),
+        })
+        savedShipmentId = createdRef.id
+      }
+
+      // Events are server-owned: ask the backend to store them on the shipment.
+      // Runs in the background; the dashboard updates live when it finishes.
+      if (supportsLiveTracking(shipmentPayload.carrier)) {
+        lookupTracking({
+          blNo: shipmentPayload.blNo,
+          carrier: shipmentPayload.carrier,
+          shipmentId: savedShipmentId,
+        }).catch((syncError) => {
+          console.error('Background tracking sync failed.', syncError)
         })
       }
 
@@ -382,12 +512,26 @@ function ShipmentForm() {
                     required
                   />
                   <div className="flex min-h-6 items-center gap-2">
-                    {values.carrier ? (
+                    {detectCarrierFromBlNumber(values.blNo) ? (
                       <span
                         className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${getCarrierBadgeClass(values.carrier)}`}
                       >
-                        {values.carrier}
+                        {getCarrierLabel(values.carrier)}
                       </span>
+                    ) : values.blNo.trim() ? (
+                      <select
+                        aria-label="Carrier"
+                        value={values.carrier}
+                        onChange={handleCarrierSelect}
+                        className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-normal text-slate-900 dark:border-white/10 dark:bg-slate-900 dark:text-white"
+                      >
+                        <option value="">Select carrier…</option>
+                        {carriers.map((carrier) => (
+                          <option key={carrier.code} value={carrier.code}>
+                            {carrier.label}
+                          </option>
+                        ))}
+                      </select>
                     ) : (
                       <span className="text-xs text-slate-500 dark:text-slate-400">
                         Carrier auto-detect runs when you leave this field.
@@ -419,7 +563,22 @@ function ShipmentForm() {
                       {errors.eta}
                     </span>
                   ) : null}
+                  {lookup.status === 'done' && lookup.eta ? (
+                    <span className="flex flex-wrap items-center gap-2 text-xs font-normal text-slate-500 dark:text-slate-400">
+                      Carrier ETA: {formatLookupDate(lookup.eta)}
+                      {values.eta !== formatDateInput(lookup.eta) ? (
+                        <button
+                          type="button"
+                          onClick={useCarrierEta}
+                          className="font-medium text-sky-600 underline-offset-2 hover:underline dark:text-sky-300"
+                        >
+                          Use carrier ETA
+                        </button>
+                      ) : null}
+                    </span>
+                  ) : null}
                 </label>
+
 
                 <label className="flex flex-col gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
                   INV Amount
@@ -448,6 +607,81 @@ function ShipmentForm() {
                   ) : null}
                 </label>
               </div>
+
+              <section
+                aria-live="polite"
+                className="rounded-3xl border border-slate-200/70 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/5"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-medium text-slate-900 dark:text-white">
+                    Live tracking
+                  </p>
+                  {lookup.status === 'done' || lookup.status === 'error' ? (
+                    <button
+                      type="button"
+                      onClick={() => runLookup({ force: true })}
+                      className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-white dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/10"
+                    >
+                      Refresh
+                    </button>
+                  ) : null}
+                </div>
+
+                {lookup.status === 'idle' ? (
+                  <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">
+                    Enter a B/L number to load the current event and ETA from the carrier.
+                  </p>
+                ) : null}
+                {lookup.status === 'unsupported' ? (
+                  <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">
+                    Live tracking is not available for this carrier. Enter the ETA manually.
+                  </p>
+                ) : null}
+                {lookup.status === 'loading' ? (
+                  <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">
+                    Checking {lookup.blNo} with the carrier…
+                  </p>
+                ) : null}
+                {lookup.status === 'error' ? (
+                  <p className="mt-2 text-xs leading-5 text-rose-600 dark:text-rose-200">
+                    {lookup.error} You can still enter the ETA manually.
+                  </p>
+                ) : null}
+                {lookup.status === 'done' ? (
+                  <dl className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <div className="rounded-2xl border border-slate-200/70 bg-white p-3 dark:border-white/10 dark:bg-slate-950/70">
+                      <dt className="text-xs tracking-[0.18em] text-slate-500 uppercase dark:text-slate-400">
+                        Current event · set by carrier
+                      </dt>
+                      <dd className="mt-1 text-sm font-semibold text-slate-950 dark:text-white">
+                        {lookup.latestEvent?.title ?? 'No events reported yet'}
+                      </dd>
+                      {lookup.latestEvent ? (
+                        <dd className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                          {[
+                            lookup.latestEvent.location,
+                            formatLookupDate(lookup.latestEvent.occurredAt),
+                            lookup.eventCount > 1 ? `${lookup.eventCount} events` : '',
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')}
+                        </dd>
+                      ) : null}
+                    </div>
+                    <div className="rounded-2xl border border-slate-200/70 bg-white p-3 dark:border-white/10 dark:bg-slate-950/70">
+                      <dt className="text-xs tracking-[0.18em] text-slate-500 uppercase dark:text-slate-400">
+                        Carrier ETA
+                      </dt>
+                      <dd className="mt-1 text-sm font-semibold text-slate-950 dark:text-white">
+                        {lookup.eta ? formatLookupDate(lookup.eta) : 'Not provided'}
+                      </dd>
+                      <dd className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                        You can change the ETA field above.
+                      </dd>
+                    </div>
+                  </dl>
+                ) : null}
+              </section>
 
               <label className="flex flex-col gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
                 Container numbers
@@ -480,13 +714,11 @@ function ShipmentForm() {
                     Carrier prefixes
                   </p>
                   <p className="mt-2 text-xs leading-6 text-slate-600 dark:text-slate-300">
-                    MSC: MEDU, MSDU, MSNU, MSMU, MSCU
-                    <br />
-                    ONE: ONEY, BRDG
-                    <br />
-                    EVERGREEN: EGLV, EGSU, EGHU
-                    <br />
-                    PIL: SUB, PIL
+                    {carriers.map((carrier) => (
+                      <span key={carrier.code} className="block">
+                        {carrier.label}: {carrier.prefixes.join(', ')}
+                      </span>
+                    ))}
                   </p>
                 </div>
               </div>

@@ -5,6 +5,7 @@ A multi-carrier shipment tracking platform that collects, parses, normalizes, an
 ## What it does
 
 * 🚢 Tracks shipments across **MSC, ONE, Evergreen, and PIL**
+* 🧭 Stores normalized per-container tracking events and shows them as a timeline
 * 🔍 Collects data from carrier APIs and web responses
 * 🧩 Parses **JSON and HTML** responses
 * 🔄 Normalizes different carrier formats into a common structure

@@ -1,6 +1,7 @@
 import { initializeApp } from 'firebase/app'
 import { getAuth, GoogleAuthProvider } from 'firebase/auth'
 import { getFirestore } from 'firebase/firestore'
+import { connectFunctionsEmulator, getFunctions } from 'firebase/functions'
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -25,6 +26,13 @@ const app = firebaseConfigError ? null : initializeApp(firebaseConfig)
 const auth = app ? getAuth(app) : null
 const db = app ? getFirestore(app) : null
 const googleProvider = app ? new GoogleAuthProvider() : null
+const functions = app ? getFunctions(app, 'us-central1') : null
+
+// Set VITE_FUNCTIONS_EMULATOR=true (e.g. in .env.development.local) to call
+// Cloud Functions running in the local emulator instead of production.
+if (functions && import.meta.env.VITE_FUNCTIONS_EMULATOR === 'true') {
+  connectFunctionsEmulator(functions, '127.0.0.1', 5001)
+}
 
 if (googleProvider) {
   googleProvider.setCustomParameters({
@@ -36,6 +44,7 @@ export {
   app,
   auth,
   db,
+  functions,
   googleProvider,
   firebaseConfig,
   firebaseConfigError,

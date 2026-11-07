@@ -11,14 +11,8 @@ import {
 } from 'firebase/firestore'
 import { db } from '../../firebase'
 import useAuth from '../hooks/useAuth'
-
-const carrierBadgeStyles = {
-  MSC: 'bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-200',
-  ONE: 'bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-200',
-  EVERGREEN:
-    'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200',
-  PIL: 'bg-orange-100 text-orange-700 dark:bg-orange-500/15 dark:text-orange-200',
-}
+import { getCarrierBadgeClass, getCarrierLabel } from '../lib/carriers'
+import { setShipmentArchived } from '../lib/tracking'
 
 const statusOptions = [
   { value: 'all', label: 'All statuses' },
@@ -143,11 +137,25 @@ function formatAmount(value) {
   return Number.isNaN(sanitizedValue) ? '—' : currencyFormatter.format(sanitizedValue)
 }
 
-function getCarrierBadgeClass(carrier) {
-  return (
-    carrierBadgeStyles[String(carrier).trim().toUpperCase()] ??
-    'bg-slate-100 text-slate-700 dark:bg-white/10 dark:text-slate-200'
-  )
+const eventDateFormatter = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+})
+
+function mapLatestEvent(data) {
+  const event = data.latestEvent
+
+  if (!event?.title) {
+    return null
+  }
+
+  const occurredAt = normalizeDate(event.occurredAt)
+
+  return {
+    title: event.title,
+    location: event.location ?? '',
+    when: occurredAt ? eventDateFormatter.format(occurredAt) : '',
+  }
 }
 
 function mapShipment(documentSnapshot) {
@@ -174,6 +182,9 @@ function mapShipment(documentSnapshot) {
     daysLeft,
     statusKey: getStatusKey(daysLeft),
     invAmount: data.invAmount ?? data.invoiceAmount ?? data.amount ?? '',
+    latestEvent: mapLatestEvent(data),
+    eventCount: data.eventCount ?? 0,
+    trackingStatus: data.trackingStatus ?? '',
   }
 }
 
@@ -230,6 +241,28 @@ function Dashboard() {
       setError('Sign-out failed. Please try again.')
     } finally {
       setIsSigningOut(false)
+    }
+  }
+
+  const handleArchive = async (shipmentId) => {
+    const confirmed = window.confirm(
+      'Move this shipment to the archive? You can restore it later.',
+    )
+
+    if (!confirmed) {
+      return
+    }
+
+    setError('')
+    setDeletingId(shipmentId)
+
+    try {
+      await setShipmentArchived(shipmentId, true)
+    } catch (archiveError) {
+      console.error('Failed to archive shipment.', archiveError)
+      setError('Shipment could not be archived. Please try again.')
+    } finally {
+      setDeletingId('')
     }
   }
 
@@ -336,6 +369,13 @@ function Dashboard() {
             </div>
 
             <Link
+              to="/archive"
+              className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:text-slate-100 dark:hover:bg-white/10"
+            >
+              Archive
+            </Link>
+
+            <Link
               to="/profile"
               className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:text-slate-100 dark:hover:bg-white/10"
             >
@@ -378,7 +418,7 @@ function Dashboard() {
                   <option value="all">All carriers</option>
                   {carriers.map((carrier) => (
                     <option key={carrier} value={carrier.toUpperCase()}>
-                      {carrier}
+                      {getCarrierLabel(carrier)}
                     </option>
                   ))}
                 </select>
@@ -458,6 +498,7 @@ function Dashboard() {
                       <th className="px-4 py-4 font-medium sm:px-6">Carrier</th>
                       <th className="px-4 py-4 font-medium sm:px-6">ETA</th>
                       <th className="px-4 py-4 font-medium sm:px-6">Days left</th>
+                      <th className="px-4 py-4 font-medium sm:px-6">Latest event</th>
                       <th className="px-4 py-4 font-medium sm:px-6">INV Amount</th>
                       <th className="px-4 py-4 font-medium sm:px-6">Actions</th>
                     </tr>
@@ -476,7 +517,7 @@ function Dashboard() {
                           <span
                             className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${getCarrierBadgeClass(shipment.carrier)}`}
                           >
-                            {shipment.carrier}
+                            {getCarrierLabel(shipment.carrier)}
                           </span>
                         </td>
                         <td className="whitespace-nowrap px-4 py-4 text-slate-600 dark:text-slate-300 sm:px-6">
@@ -488,6 +529,29 @@ function Dashboard() {
                           >
                             {formatDaysLeft(shipment.daysLeft)}
                           </span>
+                        </td>
+                        <td className="min-w-[200px] px-4 py-4 sm:px-6">
+                          {shipment.latestEvent ? (
+                            <div>
+                              <p className="font-medium text-slate-900 dark:text-white">
+                                {shipment.latestEvent.title}
+                              </p>
+                              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                                {[shipment.latestEvent.location, shipment.latestEvent.when]
+                                  .filter(Boolean)
+                                  .join(' · ')}
+                                {shipment.eventCount > 1
+                                  ? ` · ${shipment.eventCount} events`
+                                  : ''}
+                              </p>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-slate-400 dark:text-slate-500">
+                              {shipment.trackingStatus === 'error'
+                                ? 'Tracking failed'
+                                : 'No events yet'}
+                            </span>
+                          )}
                         </td>
                         <td className="whitespace-nowrap px-4 py-4 text-slate-600 dark:text-slate-300 sm:px-6">
                           {formatAmount(shipment.invAmount)}
@@ -506,6 +570,14 @@ function Dashboard() {
                             >
                               Edit
                             </Link>
+                            <button
+                              type="button"
+                              onClick={() => handleArchive(shipment.id)}
+                              disabled={deletingId === shipment.id}
+                              className="inline-flex items-center rounded-xl border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-70 dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/5"
+                            >
+                              Archive
+                            </button>
                             <button
                               type="button"
                               onClick={() => handleDelete(shipment.id)}

@@ -1,28 +1,74 @@
 import { load } from 'cheerio'
 
+/**
+ * Every extractor returns the same normalized shape:
+ * {
+ *   source: 'MSC' | 'ONE' | ...,
+ *   trackingNumber: string,
+ *   eta: Date | null,
+ *   events: Array<{
+ *     id: string,
+ *     title: string,
+ *     description: string,
+ *     location: string,
+ *     container: string,
+ *     occurredAt: Date | null,
+ *   }>,
+ * }
+ */
 const carrierExtractors = {
   MSC: extractMscTracking,
   ONE: extractOneTracking,
   EVERGREEN: extractEvergreenTracking,
   PIL: extractPilTracking,
 }
-function extractOneEta(payload) {
-  return payload?.data[0].cargoEvents?.last.date
-}
-function extractMscEta(payload) {
-  return payload?.Data?.BillOfLadings?.[0]?.GeneralTrackingInfo?.FinalPodEtaDate
-}
 
 export function extractTrackingPayload({ carrier, payload, blNo }) {
   const normalizedCarrier = normalizeString(carrier).toUpperCase()
   const extractor = carrierExtractors[normalizedCarrier] || extractUnknownTracking
-  
+
   return extractor(payload, blNo)
 }
 
-function extractUnknownTracking(payload, blNo) {
-  return extractHtmlOrObjectTracking('UNKNOWN', payload, blNo)
+function buildResult(source, blNo, eta = null, events = []) {
+  return {
+    source,
+    trackingNumber: blNo,
+    eta,
+    events: sortEvents(dedupeEvents(events)),
+  }
 }
+
+function buildEvent({ id, title, description, location, container, occurredAt }) {
+  return {
+    id: normalizeString(id),
+    title: normalizeString(title) || 'Status update',
+    description: normalizeString(description),
+    location: normalizeString(location),
+    container: normalizeString(container),
+    occurredAt: parseDateCandidate(occurredAt),
+  }
+}
+
+function extractUnknownTracking(payload, blNo) {
+  const normalizedPayload = parsePotentialJson(payload)
+
+  if (isHtmlPayload(normalizedPayload)) {
+    const $ = load(normalizedPayload)
+    return buildResult('UNKNOWN', blNo, extractEtaFromHtml($), extractEventsFromHtml($))
+  }
+
+  return buildResult(
+    'UNKNOWN',
+    blNo,
+    extractEtaFromObject(normalizedPayload),
+    extractEventsFromObject(normalizedPayload),
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* MSC                                                                 */
+/* ------------------------------------------------------------------ */
 
 function extractMscTracking(payload, blNo) {
   const normalizedPayload = parsePotentialJson(payload)
@@ -32,33 +78,59 @@ function extractMscTracking(payload, blNo) {
   }
 
   const data = normalizedPayload?.Data || normalizedPayload
-  const billOfLading = findMatchingBillOfLading(
-    data?.BillOfLadings,
-    blNo
-  )
+  const billOfLading = findMatchingBillOfLading(data?.BillOfLadings, blNo)
 
   if (!billOfLading) {
-    return {
-      source: 'MSC',
-      eta: null,
-      events: [],
-      trackingNumber: blNo,
-    }
+    return buildResult('MSC', blNo)
   }
 
-  const eta =
-    firstNormalizedDate([
-      billOfLading?.GeneralTrackingInfo?.FinalPodEtaDate,
-      ...(billOfLading?.ContainersInfo || []).map(c => c?.PodEtaDate),
-    ]) || null
+  const containers = Array.isArray(billOfLading?.ContainersInfo)
+    ? billOfLading.ContainersInfo
+    : []
 
-  return {
-    source: 'MSC',
-    eta,
-    events: [],
-    trackingNumber: blNo,
-  }
+  const eta = firstNormalizedDate([
+    billOfLading?.GeneralTrackingInfo?.FinalPodEtaDate,
+    ...containers.map((container) => container?.PodEtaDate),
+  ])
+
+  const events = containers.flatMap((container) => {
+    const containerNo = normalizeString(container?.ContainerNumber)
+    const containerEvents = Array.isArray(container?.Events) ? container.Events : []
+
+    return containerEvents.map((event, index) => {
+      const detail = Array.isArray(event?.Detail)
+        ? event.Detail.filter(Boolean).join(' · ')
+        : event?.Detail
+
+      return buildEvent({
+        id: `msc-${containerNo}-${event?.Order ?? index}`,
+        title: event?.Description,
+        description: detail,
+        location: event?.Location,
+        container: containerNo,
+        occurredAt: event?.Date,
+      })
+    })
+  })
+
+  return buildResult('MSC', blNo, eta, events)
 }
+
+function findMatchingBillOfLading(billOfLadings, blNo) {
+  const items = Array.isArray(billOfLadings) ? billOfLadings : []
+  const normalizedBlNo = normalizeString(blNo).toUpperCase()
+
+  return (
+    items.find(
+      (item) =>
+        normalizeString(item?.BillOfLadingNumber).toUpperCase() === normalizedBlNo,
+    ) || items[0] || null
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* ONE                                                                 */
+/* ------------------------------------------------------------------ */
 
 function extractOneTracking(payload, blNo) {
   const normalizedPayload = parsePotentialJson(payload)
@@ -68,7 +140,7 @@ function extractOneTracking(payload, blNo) {
    * {
    *   status: 200,
    *   code: 1,
-   *   data: [...]
+   *   data: [ { containerNo, cargoEvents: [...] }, ... ]
    * }
    */
   const containers = Array.isArray(normalizedPayload?.data)
@@ -76,21 +148,13 @@ function extractOneTracking(payload, blNo) {
     : []
 
   if (!containers.length) {
-    return {
-      source: 'ONE',
-      eta: null,
-      events: [],
-      trackingNumber: blNo,
-    }
+    return buildResult('ONE', blNo)
   }
 
-  /**
-   * Collect all cargo events from all containers
-   */
-  const allEvents = containers.flatMap(
-    (container) => Array.isArray(container?.cargoEvents)
-      ? container.cargoEvents
-      : []
+  const allEvents = containers.flatMap((container) =>
+    (Array.isArray(container?.cargoEvents) ? container.cargoEvents : []).map(
+      (event) => ({ event, containerNo: container?.containerNo }),
+    ),
   )
 
   /**
@@ -99,70 +163,68 @@ function extractOneTracking(payload, blNo) {
    * E105 = Final arrival / destination arrival
    * E089 = Before arrival fallback
    *
-   * Prefer E105 first
+   * Prefer the earliest matching arrival date.
    */
   const etaCandidates = allEvents
-    .filter(
-      (event) =>
-        event?.matrixId === 'E105' ||
-        event?.matrixId === 'E089'
-    )
-    .map((event) =>
-      parseDateCandidate(
-        event?.date || event?.localPortDate
-      )
-    )
+    .filter(({ event }) => event?.matrixId === 'E105' || event?.matrixId === 'E089')
+    .map(({ event }) => parseDateCandidate(event?.date || event?.localPortDate))
     .filter(Boolean)
     .sort((a, b) => a.getTime() - b.getTime())
 
-  const eta =
-    etaCandidates.length > 0
-      ? etaCandidates[0]
-      : null
+  const events = allEvents.map(({ event, containerNo }, index) =>
+    buildEvent({
+      id: `one-${containerNo || 'bl'}-${event?.matrixId || 'event'}-${index}`,
+      title:
+        event?.eventName ||
+        event?.eventDescription ||
+        event?.statusName ||
+        event?.description ||
+        event?.matrixId,
+      description: [event?.vesselName, event?.trigger].filter(Boolean).join(' · '),
+      location: event?.locationName,
+      container: containerNo,
+      occurredAt: event?.date || event?.localPortDate,
+    }),
+  )
 
-  /**
-   * Normalize events for your system
-   */
-  const events = allEvents.map((event, index) => ({
-    id: `${event?.matrixId || 'event'}-${index}`,
+  return buildResult('ONE', blNo, etaCandidates[0] || null, events)
+}
 
-    title:
-      normalizeString(event?.matrixId) ||
-      'Shipment Update',
+/* ------------------------------------------------------------------ */
+/* Evergreen (HTML)                                                    */
+/* ------------------------------------------------------------------ */
 
-    description: [
-      normalizeString(event?.locationName),
-      normalizeString(event?.trigger),
-    ]
-      .filter(Boolean)
-      .join(' - '),
+export function extractEvergreenTracking(html, blNo) {
+  const $ = load(String(html || ''))
 
-    location: normalizeString(
-      event?.locationName
-    ),
+  return buildResult(
+    'EVERGREEN',
+    blNo,
+    parseDateCandidate(extractEvergreenEta($)),
+    extractEventsFromHtml($, 'evergreen'),
+  )
+}
 
-    occurredAt: parseDateCandidate(
-      event?.date || event?.localPortDate
-    ),
-  }))
+export function extractEvergreenEta($) {
+  try {
+    const etaText = $('td.ec-fs-16b')
+      .filter((_, el) =>
+        $(el).text().includes('Estimated Date of Arrival at Destination')
+      )
+      .find('font')
+      .text()
+      .trim();
 
-  return {
-    source: 'ONE',
-    eta,
-    events,
-    trackingNumber: blNo,
+    return etaText || null;
+  } catch (error) {
+    console.error('Evergreen ETA extraction failed:', error);
+    return null;
   }
 }
 
-export function extractEvergreenTracking(html) {
-  const $ = load(html);
-
-  return {
-    eta: extractEvergreenEta($),
-    events: [],
-    containers: [],
-  };
-}
+/* ------------------------------------------------------------------ */
+/* PIL (JSON wrapping HTML)                                            */
+/* ------------------------------------------------------------------ */
 
 function extractPilTracking(payload, blNo) {
   const normalizedPayload = parsePotentialJson(payload)
@@ -178,12 +240,7 @@ function extractPilTracking(payload, blNo) {
   const html = normalizedPayload?.data || ''
 
   if (!html || typeof html !== 'string') {
-    return {
-      source: 'PIL',
-      eta: null,
-      events: [],
-      trackingNumber: blNo,
-    }
+    return buildResult('PIL', blNo)
   }
 
   const $ = load(html)
@@ -208,68 +265,48 @@ function extractPilTracking(payload, blNo) {
    */
 
   $('tr.resultrow').each((index, row) => {
-    const locationText = $(row)
-      .find('.location')
-      .text()
-      .replace(/\s+/g, ' ')
-      .trim()
+    const locationText = cleanText($(row).find('.location').text())
 
-    if (
-      locationText.includes('Discharge Port')
-    ) {
-      const nextLocationText = $(row)
-        .find('.next-location')
-        .text()
-        .replace(/\s+/g, ' ')
-        .trim()
+    if (locationText.includes('Discharge Port')) {
+      const nextLocationText = cleanText($(row).find('.next-location').text())
 
       /**
        * Example:
        * "MZMPM 03-May-2026"
        */
 
-      const dateMatch = nextLocationText.match(
-        /\d{2}-[A-Za-z]{3}-\d{4}/
-      )
+      const dateMatch = nextLocationText.match(/\d{2}-[A-Za-z]{3}-\d{4}/)
 
       if (dateMatch?.[0]) {
         eta = parseDateCandidate(dateMatch[0])
       }
 
-      events.push({
-        id: `pil-discharge-${index}`,
-        title: 'Discharge Port',
-        description: nextLocationText,
-        location: locationText,
-        occurredAt: eta,
-      })
+      events.push(
+        buildEvent({
+          id: `pil-discharge-${index}`,
+          title: 'Discharge Port',
+          description: nextLocationText,
+          location: locationText.replace('Discharge Port', ''),
+          occurredAt: eta,
+        }),
+      )
     }
   })
 
-  return {
-    source: 'PIL',
-    eta,
-    events,
-    trackingNumber: blNo,
-  }
+  return buildResult('PIL', blNo, eta, events)
 }
 
-function extractPilContainers(payload) {
+export function extractPilContainers(payload) {
   const normalizedPayload = parsePotentialJson(payload)
   const html = normalizedPayload?.data || ''
 
-  if (!html) return []
+  if (!html || typeof html !== 'string') return []
 
   const $ = load(html)
   const containers = new Set()
 
   $('.next-location').each((_, el) => {
-    const text = $(el)
-      .text()
-      .replace(/\s+/g, ' ')
-      .trim()
-
-    const match = text.match(/[A-Z]{4}\d{7}/)
+    const match = cleanText($(el).text()).match(/[A-Z]{4}\d{7}/)
 
     if (match) {
       containers.add(match[0])
@@ -279,19 +316,12 @@ function extractPilContainers(payload) {
   return [...containers]
 }
 
-
-function extractPilContainerTracking(payload, blNo, cntrNo) {
+export function extractPilContainerTracking(payload, blNo, cntrNo) {
   const normalizedPayload = parsePotentialJson(payload)
   const html = normalizedPayload?.data || ''
 
-  if (!html) {
-    return {
-      source: 'PIL',
-      eta: null,
-      events: [],
-      trackingNumber: cntrNo,
-      blNo,
-    }
+  if (!html || typeof html !== 'string') {
+    return buildResult('PIL', blNo)
   }
 
   const $ = load(html)
@@ -304,18 +334,9 @@ function extractPilContainerTracking(payload, blNo, cntrNo) {
 
     if (cells.length < 6) return
 
-    const eventDate = $(cells[3])
-      .text()
-      .replace(/\*/g, '')
-      .trim()
-
-    const eventName = $(cells[4])
-      .text()
-      .trim()
-
-    const location = $(cells[5])
-      .text()
-      .trim()
+    const eventDate = $(cells[3]).text().replace(/\*/g, '').trim()
+    const eventName = $(cells[4]).text().trim()
+    const location = $(cells[5]).text().trim()
 
     if (!eventName) return
 
@@ -324,60 +345,45 @@ function extractPilContainerTracking(payload, blNo, cntrNo) {
         ? parseDateCandidate(eventDate)
         : null
 
-    events.push({
-      id: `pil-cntr-${index}`,
-      title: eventName,
-      location,
-      occurredAt: parsedDate,
-    })
+    events.push(
+      buildEvent({
+        id: `pil-${cntrNo}-${index}`,
+        title: eventName,
+        location,
+        container: cntrNo,
+        occurredAt: parsedDate,
+      }),
+    )
 
-    if (
-      eventName === 'Vessel Discharge' &&
-      parsedDate
-    ) {
+    if (eventName === 'Vessel Discharge' && parsedDate) {
       eta = parsedDate
     }
   })
 
-  return {
-    source: 'PIL',
-    eta,
-    events,
-    trackingNumber: cntrNo,
-    blNo,
-  }
+  return buildResult('PIL', blNo, eta, events)
 }
 
-function extractGenericTrackingObject(source, payload, blNo) {
-  return {
+/**
+ * Combine per-container results into one B/L-level result.
+ * B/L ETA = latest container discharge (shipment is complete when the last box lands).
+ */
+export function mergeTrackingResults(source, blNo, results) {
+  const etas = results.map((result) => result?.eta).filter(Boolean)
+  const eta = etas.length
+    ? new Date(Math.max(...etas.map((date) => date.getTime())))
+    : null
+
+  return buildResult(
     source,
-    eta: extractEtaFromObject(payload),
-    events: extractEventsFromObject(payload),
-    trackingNumber: blNo,
-  }
-}
-
-function findMatchingBillOfLading(billOfLadings, blNo) {
-  const items = Array.isArray(billOfLadings) ? billOfLadings : []
-  const normalizedBlNo = normalizeString(blNo).toUpperCase()
-
-  return (
-    items.find(
-      (item) =>
-        normalizeString(item?.BillOfLadingNumber).toUpperCase() === normalizedBlNo,
-    ) || items[0] || null
+    blNo,
+    eta,
+    results.flatMap((result) => result?.events || []),
   )
 }
 
-function buildMscEventDescription(detail, containers) {
-  const containerList = Array.from(containers || [])
-  const containerSummary =
-    containerList.length > 0
-      ? `Containers: ${containerList.join(', ')}`
-      : ''
-
-  return normalizeString([detail, containerSummary].filter(Boolean).join(' | '))
-}
+/* ------------------------------------------------------------------ */
+/* Generic object / HTML helpers                                       */
+/* ------------------------------------------------------------------ */
 
 function extractEtaFromObject(payload) {
   const namedEntries = collectNamedValues(payload)
@@ -486,46 +492,34 @@ function mapEventRecord(event, index) {
   }
 
   if (typeof event === 'string') {
-    return {
-      id: `${index}-${event}`,
-      title: event,
-      description: '',
-      location: '',
-      occurredAt: null,
-    }
+    return buildEvent({ id: `${index}-${event}`, title: event })
   }
 
-  const occurredAt = parseDateCandidate(
-    event.timestamp ||
+  return buildEvent({
+    id: event.id || `${index}-${event.status || event.title || 'event'}`,
+    title: event.status || event.event || event.title || event.name,
+    description: event.description || event.message,
+    location: event.location || event.port || event.place,
+    container: event.container || event.containerNo,
+    occurredAt:
+      event.timestamp ||
       event.occurredAt ||
       event.date ||
       event.eventDate ||
       event.updatedAt ||
       event.time,
-  )
-
-  const title = normalizeString(
-    event.status || event.event || event.title || event.name || 'Status update',
-  )
-
-  return {
-    id: normalizeString(event.id || `${index}-${title}`),
-    title,
-    description: normalizeString(event.description || event.message || ''),
-    location: normalizeString(event.location || event.port || event.place || ''),
-    occurredAt,
-  }
+  })
 }
 
 function extractEtaFromHtml($) {
   const rowEta = extractEtaFromRows(
     $('table tr')
-      .map((_, row) =>
+      .map((_, row) => [
         $(row)
           .find('th,td')
-          .map((__, cell) => $(cell).text().replace(/\s+/g, ' ').trim())
+          .map((__, cell) => cleanText($(cell).text()))
           .get(),
-      )
+      ])
       .get(),
   )
 
@@ -533,26 +527,25 @@ function extractEtaFromHtml($) {
     return rowEta
   }
 
-  const bodyText = $('body').text().replace(/\s+/g, ' ').trim()
+  const bodyText = cleanText($('body').text())
   const labeledMatch = bodyText.match(
     /(eta|estimated arrival|arrival)[^A-Za-z0-9]{0,8}([A-Za-z0-9,/: .-]{6,50})/i,
   )
 
-  if (labeledMatch) {
-    return parseDateCandidate(labeledMatch[2])
-  }
-
-  return parseDateCandidate(bodyText)
+  return labeledMatch ? parseDateCandidate(labeledMatch[2]) : null
 }
 
-function extractEventsFromHtml($) {
-  const seen = new Set()
+/**
+ * Generic table-row event extraction: any row that has a date cell and
+ * at least one other text cell becomes an event.
+ */
+function extractEventsFromHtml($, idPrefix = 'html') {
   const events = []
 
-  $('table tr').each((_, row) => {
+  $('table tr').each((rowIndex, row) => {
     const cells = $(row)
-      .find('th,td')
-      .map((__, cell) => $(cell).text().replace(/\s+/g, ' ').trim())
+      .find('td')
+      .map((__, cell) => cleanText($(cell).text()))
       .get()
       .filter(Boolean)
 
@@ -563,46 +556,25 @@ function extractEventsFromHtml($) {
     const occurredAt = cells.map(parseDateCandidate).find(Boolean) || null
     const nonDateCells = cells.filter((cell) => !parseDateCandidate(cell))
 
-    if (!occurredAt && nonDateCells.length < 2) {
+    if (!occurredAt || nonDateCells.length < 1) {
       return
     }
 
-    const title = normalizeString(nonDateCells[0] || 'Status update')
-    const description = normalizeString(nonDateCells.slice(1).join(' | '))
-    const location = normalizeString(nonDateCells[nonDateCells.length - 1] || '')
-    const key = `${title}|${occurredAt ? occurredAt.toISOString() : 'na'}|${location}`
+    const container = cells.join(' ').match(/\b[A-Z]{4}\d{7}\b/)?.[0] || ''
 
-    if (seen.has(key)) {
-      return
-    }
-
-    seen.add(key)
-    events.push({
-      id: key,
-      title,
-      description,
-      location,
-      occurredAt,
-    })
+    events.push(
+      buildEvent({
+        id: `${idPrefix}-row-${rowIndex}`,
+        title: nonDateCells[0],
+        description: nonDateCells.slice(1, -1).join(' · '),
+        location: nonDateCells.length > 1 ? nonDateCells[nonDateCells.length - 1] : '',
+        container,
+        occurredAt,
+      }),
+    )
   })
 
   return events
-}
-export function extractEvergreenEta($) {
-  try {
-    const etaText = $('td.ec-fs-16b')
-      .filter((_, el) =>
-        $(el).text().includes('Estimated Date of Arrival at Destination')
-      )
-      .find('font')
-      .text()
-      .trim();
-
-    return etaText || null;
-  } catch (error) {
-    console.error('Evergreen ETA extraction failed:', error);
-    return null;
-  }
 }
 
 function extractEtaFromRows(rows) {
@@ -627,6 +599,42 @@ function extractEtaFromRows(rows) {
   return null
 }
 
+/* ------------------------------------------------------------------ */
+/* Event list hygiene                                                  */
+/* ------------------------------------------------------------------ */
+
+function dedupeEvents(events) {
+  const seen = new Set()
+
+  return events.filter((event) => {
+    const key = [
+      event.title,
+      event.location,
+      event.container,
+      event.occurredAt ? event.occurredAt.toISOString() : 'na',
+    ].join('|')
+
+    if (seen.has(key)) {
+      return false
+    }
+
+    seen.add(key)
+    return true
+  })
+}
+
+function sortEvents(events) {
+  return [...events].sort((left, right) => {
+    const leftTime = left.occurredAt ? left.occurredAt.getTime() : Number.MAX_SAFE_INTEGER
+    const rightTime = right.occurredAt ? right.occurredAt.getTime() : Number.MAX_SAFE_INTEGER
+    return leftTime - rightTime
+  })
+}
+
+/* ------------------------------------------------------------------ */
+/* Primitive parsers                                                   */
+/* ------------------------------------------------------------------ */
+
 function parsePotentialJson(payload) {
   if (typeof payload !== 'string') {
     return payload
@@ -640,12 +648,12 @@ function parsePotentialJson(payload) {
 
   try {
     return JSON.parse(trimmedPayload)
-  } catch (error) {
+  } catch {
     return payload
   }
 }
 
-function parseDateCandidate(value) {
+export function parseDateCandidate(value) {
   if (!value) {
     return null
   }
@@ -663,38 +671,54 @@ function parseDateCandidate(value) {
     .replace(/(\d)(st|nd|rd|th)\b/gi, '$1')
     .trim()
 
-  if (!source) {
+  if (!source || source.length > 80) {
     return null
   }
 
-  const slashOrDotDate = source.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})$/)
+  // dd/mm/yyyy, dd.mm.yyyy, dd-mm-yyyy (optionally followed by hh:mm)
+  const numericDate = source.match(
+    /^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})(?:\s+(\d{1,2}):(\d{2}))?$/,
+  )
 
-  if (slashOrDotDate) {
-    const [, day, month, year] = slashOrDotDate
+  if (numericDate) {
+    const [, day, month, year, hours = '12', minutes = '0'] = numericDate
     const normalizedYear = year.length === 2 ? `20${year}` : year
     const parsedDate = new Date(
       Number(normalizedYear),
       Number(month) - 1,
       Number(day),
-      12,
+      Number(hours),
+      Number(minutes),
     )
 
-    if (!Number.isNaN(parsedDate.getTime())) {
-      return parsedDate
-    }
+    return Number.isNaN(parsedDate.getTime()) ? null : parsedDate
   }
 
   const candidates = [
     source,
     ...(source.match(
-      /\b(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4}|\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})\b/g,
+      /\b(?:\d{4}-\d{1,2}-\d{1,2}(?:[T ]\d{1,2}:\d{2}(?::\d{2})?)?|\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{1,2}-[A-Za-z]{3}-\d{4}(?:\s+\d{1,2}:\d{2})?|[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4}|\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})\b/g,
     ) || []),
   ]
 
   for (const candidate of candidates) {
+    // V8's Date parser is very lenient ("Port 12" parses as 2001).
+    // Only accept candidates that carry an explicit 4-digit year.
+    if (!/(?:^|\D)(?:19|20)\d{2}(?:\D|$)/.test(candidate)) {
+      continue
+    }
+
+    const numericCandidate = candidate.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})$/)
+
+    if (numericCandidate) {
+      const nested = parseDateCandidate(candidate)
+      if (nested) return nested
+      continue
+    }
+
     const parsedDate = new Date(candidate)
 
-    if (!Number.isNaN(parsedDate.getTime())) {
+    if (!Number.isNaN(parsedDate.getTime()) && parsedDate.getFullYear() > 2000) {
       return parsedDate
     }
   }
@@ -719,6 +743,10 @@ function isHtmlPayload(payload) {
     typeof payload === 'string' &&
     /<html|<body|<table|<tr|<td|<div/i.test(payload)
   )
+}
+
+function cleanText(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim()
 }
 
 function normalizeString(value) {
