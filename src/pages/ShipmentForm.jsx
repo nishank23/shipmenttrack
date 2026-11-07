@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   addDoc,
   collection,
@@ -109,6 +109,12 @@ function formatLookupDate(value) {
 
 function ShipmentForm() {
   const { shipmentId } = useParams()
+  const [searchParams] = useSearchParams()
+  // Set by the landing page: the B/L the visitor typed before signing in.
+  const prefillBl = shipmentId
+    ? ''
+    : String(searchParams.get('bl') ?? '').toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 40)
+  const prefillLookupDoneRef = useRef(false)
   const navigate = useNavigate()
   const { currentUser } = useAuth()
   const [values, setValues] = useState(initialValues)
@@ -125,7 +131,11 @@ function ShipmentForm() {
     if (!shipmentId) {
       etaTouchedRef.current = false
       setLookup(idleLookup)
-      setValues(initialValues)
+      setValues(
+        prefillBl
+          ? { ...initialValues, blNo: prefillBl, carrier: detectCarrierFromBlNumber(prefillBl) }
+          : initialValues,
+      )
       setErrors({})
       setFormError('')
       setIsLoadingShipment(false)
@@ -219,7 +229,19 @@ function ShipmentForm() {
     return () => {
       isMounted = false
     }
-  }, [currentUser?.uid, navigate, shipmentId])
+  }, [currentUser?.uid, navigate, shipmentId, prefillBl])
+
+  // Load live tracking once for a B/L handed over from the landing page.
+  useEffect(() => {
+    if (!prefillBl || prefillLookupDoneRef.current || values.blNo !== prefillBl) {
+      return
+    }
+
+    prefillLookupDoneRef.current = true
+    runLookup()
+    // runLookup reads the current values; it only needs to run once here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillBl, values.blNo])
 
   const handleChange = (field) => (event) => {
     const nextValue = event.target.value

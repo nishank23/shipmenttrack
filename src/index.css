@@ -1,10 +1,9 @@
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap');
 @import "tailwindcss";
 
 :root {
-  color: #0f172a;
-  background-color: #f8fafc;
-  font-family: 'Space Grotesk', 'Segoe UI', sans-serif;
+  color: #1f3038;
+  background-color: #f7f9fa;
+  font-family: 'Albert Sans', 'Segoe UI', sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -14,7 +13,7 @@
 @media (prefers-color-scheme: dark) {
   :root {
     color: #dbeafe;
-    background-color: #020617;
+    background-color: #06101f;
   }
 }
 
@@ -26,21 +25,16 @@ html {
   scroll-behavior: smooth;
 }
 
+/* Flat ground: surfaces are separated by tone steps, not gradients. */
 body {
   margin: 0;
   min-height: 100vh;
-  background:
-    linear-gradient(135deg, rgba(14, 165, 233, 0.08), transparent 28%),
-    linear-gradient(315deg, rgba(20, 184, 166, 0.1), transparent 30%),
-    linear-gradient(180deg, #f8fafc 0%, #eef6ff 52%, #f1f5f9 100%);
+  background: #f7f9fa;
 }
 
 @media (prefers-color-scheme: dark) {
   body {
-    background:
-      linear-gradient(135deg, rgba(34, 211, 238, 0.16), transparent 28%),
-      linear-gradient(315deg, rgba(251, 191, 36, 0.08), transparent 28%),
-      linear-gradient(180deg, #020617 0%, #0f172a 52%, #111827 100%);
+    background: #06101f;
   }
 }
 
@@ -74,165 +68,16 @@ select {
   }
 }
 
-.login-stage {
-  color-scheme: light;
-}
-
-@media (prefers-color-scheme: dark) {
-  .login-stage {
-    color-scheme: dark;
-  }
-}
-
-.login-grid-bg {
-  background:
-    linear-gradient(rgba(15, 23, 42, 0.07) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(15, 23, 42, 0.07) 1px, transparent 1px),
-    radial-gradient(circle at 18% 16%, rgba(20, 184, 166, 0.18), transparent 28%),
-    radial-gradient(circle at 78% 78%, rgba(251, 191, 36, 0.16), transparent 26%);
-  background-size: 54px 54px, 54px 54px, auto, auto;
-}
-
-@media (prefers-color-scheme: dark) {
-  .login-grid-bg {
-    background:
-      linear-gradient(rgba(148, 163, 184, 0.09) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(148, 163, 184, 0.09) 1px, transparent 1px),
-      radial-gradient(circle at 18% 16%, rgba(45, 212, 191, 0.2), transparent 28%),
-      radial-gradient(circle at 80% 76%, rgba(251, 191, 36, 0.13), transparent 26%);
-    background-size: 54px 54px, 54px 54px, auto, auto;
-  }
-}
-
-.login-sweep {
-  background: linear-gradient(115deg, transparent 0%, rgba(34, 211, 238, 0.14) 42%, transparent 58%);
-  transform: translateX(-70%);
-  animation: loginSweep 7s ease-in-out infinite;
-}
-
-.login-panel,
-.login-dashboard {
-  animation: loginRise 620ms ease-out both;
-}
-
-.login-dashboard {
-  animation-delay: 120ms;
-}
-
-.login-stat {
-  animation: loginFloat 5s ease-in-out infinite;
-}
-
-.login-stat:nth-child(2) {
-  animation-delay: 650ms;
-}
-
-.login-stat:nth-child(3) {
-  animation-delay: 1.2s;
-}
-
-.login-pulse-ring {
-  box-shadow: 0 0 0 0 rgba(45, 212, 191, 0.45);
-  animation: loginPulse 1.8s ease-out infinite;
-}
-
-.login-google-button {
-  overflow: hidden;
-  position: relative;
-}
-
-.login-google-button::after {
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.38), transparent);
-  content: '';
-  inset: 0;
-  position: absolute;
-  transform: translateX(-120%);
-  animation: buttonSheen 3.8s ease-in-out infinite;
-}
-
-.login-google-button > * {
-  position: relative;
-  z-index: 1;
-}
-
-.login-scanline {
-  animation: scanline 2.9s linear infinite;
-  box-shadow: 0 0 18px rgba(103, 232, 249, 0.9);
-}
-
-.login-route-glow {
-  background:
-    radial-gradient(circle at 22% 50%, rgba(52, 211, 153, 0.18), transparent 24%),
-    radial-gradient(circle at 56% 50%, rgba(251, 191, 36, 0.16), transparent 20%),
-    radial-gradient(circle at 86% 52%, rgba(251, 113, 133, 0.15), transparent 22%);
-}
-
-.login-route-track::after {
-  background-image: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.75), transparent);
-  content: '';
-  height: 100%;
-  left: 0;
-  position: absolute;
-  top: 0;
-  width: 26%;
-  animation: routeSpark 2.2s linear infinite;
-}
-
-.login-route-fill {
-  transform-origin: left center;
-  animation: routeBreathe 3s ease-in-out infinite;
-}
-
-.login-route-dot {
-  animation: routeDot 2.4s ease-in-out infinite;
-}
-
-.login-route-dot-mid {
-  animation-delay: 420ms;
-}
-
 .app-shell {
   isolation: isolate;
   position: relative;
 }
 
-.app-shell::before {
-  background:
-    linear-gradient(rgba(15, 23, 42, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(15, 23, 42, 0.04) 1px, transparent 1px);
-  background-size: 46px 46px;
-  content: '';
-  inset: 0;
-  pointer-events: none;
-  position: fixed;
-  z-index: -1;
-}
-
-@media (prefers-color-scheme: dark) {
-  .app-shell::before {
-    background:
-      linear-gradient(rgba(148, 163, 184, 0.06) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(148, 163, 184, 0.06) 1px, transparent 1px);
-    background-size: 46px 46px;
-  }
-}
-
 .app-motion-card {
-  animation: loginRise 520ms ease-out both;
+  animation: appRise 520ms ease-out both;
 }
 
-@keyframes loginSweep {
-  0%,
-  42% {
-    transform: translateX(-76%);
-  }
-  72%,
-  100% {
-    transform: translateX(76%);
-  }
-}
-
-@keyframes loginRise {
+@keyframes appRise {
   from {
     opacity: 0;
     transform: translateY(16px) scale(0.985);
@@ -243,117 +88,243 @@ select {
   }
 }
 
-@keyframes loginFloat {
-  0%,
-  100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(-5px);
+@media (prefers-reduced-motion: reduce) {
+  .app-motion-card {
+    animation: none;
   }
 }
 
-@keyframes loginPulse {
-  0% {
-    box-shadow: 0 0 0 0 rgba(45, 212, 191, 0.45);
-  }
-  70% {
-    box-shadow: 0 0 0 16px rgba(45, 212, 191, 0);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(45, 212, 191, 0);
+/* ---------- Arrival lane (shared by landing and dashboard) ---------- */
+
+.lane {
+  --lane-ink: #1f3038;
+  --lane-soft: #64748b;
+  --lane-faint: #e2e8f0;
+  --lane-accent: #0d7480;
+  --lane-card: #1f3038;
+  --lane-card-ink: #f8fafc;
+  --lane-hover: #f1f5f9;
+  --lane-overdue: #c2304a;
+  --lane-week: #b86e00;
+  --lane-fortnight: #0d7480;
+  --lane-later: #8a989e;
+  min-width: 0;
+}
+
+@media (prefers-color-scheme: dark) {
+  .lane {
+    --lane-ink: #e2e8f0;
+    --lane-soft: #94a3b8;
+    --lane-faint: rgba(255, 255, 255, 0.08);
+    --lane-accent: #5eead4;
+    --lane-card: #e2e8f0;
+    --lane-card-ink: #06101f;
+    --lane-hover: rgba(255, 255, 255, 0.08);
+    --lane-overdue: #fb7185;
+    --lane-week: #fbbf24;
+    --lane-fortnight: #5eead4;
+    --lane-later: #64748b;
   }
 }
 
-@keyframes buttonSheen {
-  0%,
-  52% {
-    transform: translateX(-120%);
-  }
-  72%,
-  100% {
-    transform: translateX(120%);
-  }
+.lane-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 16px;
 }
 
-@keyframes scanline {
+.lane-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--lane-ink);
+}
+
+.lane-caption {
+  margin: 0;
+  font-size: 13px;
+  color: var(--lane-soft);
+}
+
+.lane-track {
+  position: relative;
+  margin-top: 12px;
+  min-width: 0;
+}
+
+.lane-grid {
+  position: absolute;
+  top: 0;
+  bottom: 24px;
+  width: 1px;
+  background: var(--lane-faint);
+}
+
+.lane-axis {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 24px;
+  height: 1px;
+  background: var(--lane-faint);
+}
+
+.lane-today {
+  position: absolute;
+  top: 0;
+  bottom: 24px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 2px;
+  background: var(--lane-accent);
+}
+
+.lane-item {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  translate: -50% 0;
+  color: var(--lane-ink);
+  text-decoration: none;
+  outline: none;
+  cursor: pointer;
+}
+
+.lane-label {
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+  transition: background-color 200ms ease, color 200ms ease;
+}
+
+.lane-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-top: 2px;
+  border-radius: 999px;
+  transition: transform 300ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.lane-dot.is-overdue {
+  background: var(--lane-overdue);
+}
+
+.lane-dot.is-week {
+  background: var(--lane-week);
+}
+
+.lane-dot.is-fortnight {
+  background: var(--lane-fortnight);
+}
+
+.lane-dot.is-later {
+  background: var(--lane-later);
+}
+
+.lane-item:hover .lane-label,
+.lane-item.is-active .lane-label {
+  background: var(--lane-hover);
+}
+
+.lane-item:hover .lane-dot,
+.lane-item.is-active .lane-dot {
+  transform: scale(1.5);
+}
+
+.lane-item:focus-visible .lane-label {
+  outline: 2px solid var(--lane-accent);
+  outline-offset: 1px;
+}
+
+.lane-card {
+  position: absolute;
+  width: 240px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--lane-card);
+  color: var(--lane-card-ink);
+  font-size: 13px;
+  line-height: 1.5;
+  pointer-events: none;
+  box-shadow: 0 10px 30px rgba(2, 6, 23, 0.25);
+  animation: laneCardIn 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  overflow-wrap: anywhere;
+}
+
+.lane-card p {
+  margin: 0;
+}
+
+.lane-card-title {
+  font-weight: 700;
+  margin-bottom: 2px !important;
+}
+
+@keyframes laneCardIn {
   from {
-    transform: translateY(0);
+    opacity: 0;
+    transform: translateY(6px);
   }
   to {
-    transform: translateY(100dvh);
-  }
-}
-
-@keyframes routeSpark {
-  from {
-    transform: translateX(-110%);
-  }
-  to {
-    transform: translateX(420%);
-  }
-}
-
-@keyframes routeBreathe {
-  0%,
-  100% {
-    opacity: 0.78;
-    transform: translateY(-50%) scaleX(0.95);
-  }
-  50% {
     opacity: 1;
-    transform: translateY(-50%) scaleX(1);
+    transform: none;
   }
 }
 
-@keyframes routeDot {
-  0%,
-  100% {
-    transform: translateY(-50%) scale(1);
-  }
-  50% {
-    transform: translateY(-50%) scale(1.18);
-  }
+.lane-tick {
+  position: absolute;
+  bottom: 0;
+  white-space: nowrap;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--lane-soft);
 }
 
-@media (max-height: 760px) {
-  .login-extra {
-    display: none;
-  }
-
-  .login-route {
-    min-height: 118px;
-  }
+.lane-tick.is-today {
+  font-weight: 700;
+  color: var(--lane-accent);
 }
 
-@media (max-height: 640px) {
-  .login-stage h1 {
-    font-size: 2rem;
-    line-height: 1.05;
-  }
+.lane-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+  color: var(--lane-soft);
+}
 
-  .login-stage h2 {
-    font-size: 1.5rem;
-    line-height: 1.1;
-  }
+.lane-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
 
-  .login-route {
-    min-height: 96px;
-  }
+.lane-legend .lane-dot {
+  width: 8px;
+  height: 8px;
+  margin: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .login-sweep,
-  .login-panel,
-  .login-dashboard,
-  .login-stat,
-  .login-pulse-ring,
-  .login-google-button::after,
-  .login-scanline,
-  .login-route-track::after,
-  .login-route-fill,
-  .login-route-dot,
-  .app-motion-card {
+  .lane-card {
     animation: none;
+  }
+
+  .lane-dot,
+  .lane-label {
+    transition: none;
   }
 }
