@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Link, NavLink, useNavigate } from 'react-router-dom'
 import {
   collection,
   deleteDoc,
@@ -10,22 +10,33 @@ import {
   where,
 } from 'firebase/firestore'
 import { db } from '../../firebase'
+import { Icon } from '@iconify/react'
 import useAuth from '../hooks/useAuth'
-import { getCarrierBadgeClass, getCarrierLabel } from '../lib/carriers'
+import ArrivalLane from '../components/ArrivalLane'
+import { gsap, prefersReducedMotion, useSmoothScroll } from '../lib/motion'
+import { getCarrierLabel } from '../lib/carriers'
 import { setShipmentArchived } from '../lib/tracking'
 
-const statusOptions = [
-  { value: 'all', label: 'All statuses' },
-  { value: 'arriving-this-week', label: 'Arriving this week' },
-  { value: 'arriving-in-14-days', label: 'Arriving in 14 days' },
-  { value: 'overdue', label: 'Overdue' },
-  { value: 'scheduled', label: 'Scheduled later' },
+const DAY_MS = 86400000
+
+// Urgency buckets double as the filter tabs at the top of the screen.
+const buckets = [
+  { key: 'all', label: 'All shipments' },
+  { key: 'overdue', label: 'Past ETA' },
+  { key: 'week', label: 'Arriving in 7 days' },
+  { key: 'fortnight', label: 'In 8–14 days' },
+  { key: 'later', label: 'Later or no ETA' },
 ]
 
 const dateFormatter = new Intl.DateTimeFormat('en-US', {
   month: 'short',
   day: 'numeric',
   year: 'numeric',
+})
+
+const shortDateFormatter = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
 })
 
 const currencyFormatter = new Intl.NumberFormat('en-US', {
@@ -44,159 +55,115 @@ function normalizeDate(value) {
     return value.toDate()
   }
 
-  if (value instanceof Date) {
-    return value
-  }
-
-  const parsedDate = new Date(value)
-
+  const parsedDate = value instanceof Date ? value : new Date(value)
   return Number.isNaN(parsedDate.getTime()) ? null : parsedDate
+}
+
+function startOfDay(date) {
+  const day = new Date(date)
+  day.setHours(0, 0, 0, 0)
+  return day
 }
 
 function getDayDifference(value) {
   const etaDate = normalizeDate(value)
-
-  if (!etaDate) {
-    return null
-  }
-
-  const etaDay = new Date(etaDate)
-  etaDay.setHours(0, 0, 0, 0)
-
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-
-  return Math.round((etaDay.getTime() - today.getTime()) / 86400000)
+  return etaDate
+    ? Math.round((startOfDay(etaDate).getTime() - startOfDay(new Date()).getTime()) / DAY_MS)
+    : null
 }
 
-function getStatusKey(daysLeft) {
-  if (daysLeft === null) {
-    return 'scheduled'
-  }
-
-  if (daysLeft < 0) {
-    return 'overdue'
-  }
-
-  if (daysLeft <= 7) {
-    return 'arriving-this-week'
-  }
-
-  if (daysLeft <= 14) {
-    return 'arriving-in-14-days'
-  }
-
-  return 'scheduled'
-}
-
-function getDaysLeftClasses(daysLeft) {
-  if (daysLeft === null) {
-    return 'bg-slate-100 text-slate-700 dark:bg-white/10 dark:text-slate-200'
-  }
-
-  if (daysLeft <= 7) {
-    return 'bg-rose-50 text-rose-700 dark:bg-rose-500/15 dark:text-rose-200'
-  }
-
-  if (daysLeft <= 14) {
-    return 'bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-200'
-  }
-
-  return 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200'
-}
-
-function formatEta(value) {
-  const date = normalizeDate(value)
-  return date ? dateFormatter.format(date) : 'No ETA'
+function getBucket(daysLeft) {
+  if (daysLeft === null) return 'later'
+  if (daysLeft < 0) return 'overdue'
+  if (daysLeft <= 7) return 'week'
+  if (daysLeft <= 14) return 'fortnight'
+  return 'later'
 }
 
 function formatDaysLeft(daysLeft) {
-  if (daysLeft === null) {
-    return 'Unknown'
-  }
-
+  if (daysLeft === null) return 'No ETA'
   if (daysLeft < 0) {
-    return `${Math.abs(daysLeft)} day${Math.abs(daysLeft) === 1 ? '' : 's'} overdue`
+    const days = Math.abs(daysLeft)
+    return `${days} day${days === 1 ? '' : 's'} past ETA`
   }
+  if (daysLeft === 0) return 'Due today'
+  return `In ${daysLeft} day${daysLeft === 1 ? '' : 's'}`
+}
 
-  if (daysLeft === 0) {
-    return 'Due today'
-  }
-
-  return `${daysLeft} day${daysLeft === 1 ? '' : 's'}`
+// Colour carries urgency only.
+function urgencyText(bucket) {
+  if (bucket === 'overdue') return 'text-rose-600 dark:text-rose-300'
+  if (bucket === 'week') return 'text-amber-700 dark:text-amber-300'
+  return 'text-slate-600 dark:text-slate-300'
 }
 
 function formatAmount(value) {
-  if (value === undefined || value === null || value === '') {
-    return '—'
-  }
-
-  const sanitizedValue =
-    typeof value === 'string' ? Number(value.replaceAll(',', '')) : Number(value)
-
-  return Number.isNaN(sanitizedValue) ? '—' : currencyFormatter.format(sanitizedValue)
-}
-
-const eventDateFormatter = new Intl.DateTimeFormat('en-US', {
-  month: 'short',
-  day: 'numeric',
-})
-
-function mapLatestEvent(data) {
-  const event = data.latestEvent
-
-  if (!event?.title) {
-    return null
-  }
-
-  const occurredAt = normalizeDate(event.occurredAt)
-
-  return {
-    title: event.title,
-    location: event.location ?? '',
-    when: occurredAt ? eventDateFormatter.format(occurredAt) : '',
-  }
+  if (value === undefined || value === null || value === '') return '—'
+  const amount = typeof value === 'string' ? Number(value.replaceAll(',', '')) : Number(value)
+  return Number.isNaN(amount) ? '—' : currencyFormatter.format(amount)
 }
 
 function mapShipment(documentSnapshot) {
   const data = documentSnapshot.data()
-  const daysLeft = getDayDifference(data.eta)
-  const carrier = String(data.carrier ?? 'Unknown').trim() || 'Unknown'
+  const eta = normalizeDate(data.eta)
+  const daysLeft = getDayDifference(eta)
+  const latestEvent = data.latestEvent?.title
+    ? {
+        title: data.latestEvent.title,
+        location: data.latestEvent.location ?? '',
+        occurredAt: normalizeDate(data.latestEvent.occurredAt),
+      }
+    : null
 
   return {
     id: documentSnapshot.id,
     invoiceNo:
-      data.invoiceNo ??
-      data.invoiceNumber ??
-      data.invoice ??
-      data.invoice_number ??
-      '—',
-    blNo:
-      data.blNo ??
-      data.blNumber ??
-      data.billOfLadingNo ??
-      data.bill_of_lading_no ??
-      '—',
-    carrier,
-    eta: data.eta,
+      data.invoiceNo ?? data.invoiceNumber ?? data.invoice ?? data.invoice_number ?? '—',
+    blNo: data.blNo ?? data.blNumber ?? data.billOfLadingNo ?? data.bill_of_lading_no ?? '—',
+    carrier: String(data.carrier ?? 'Unknown').trim() || 'Unknown',
+    consigneeName: String(data.consigneeName ?? '').trim(),
+    eta,
     daysLeft,
-    statusKey: getStatusKey(daysLeft),
+    bucket: getBucket(daysLeft),
     invAmount: data.invAmount ?? data.invoiceAmount ?? data.amount ?? '',
-    latestEvent: mapLatestEvent(data),
+    latestEvent,
     eventCount: data.eventCount ?? 0,
     trackingStatus: data.trackingStatus ?? '',
   }
 }
 
+function ShipTrackMark() {
+  // A container seen side-on: the product's object, in the accent.
+  return (
+    <svg viewBox="0 0 32 32" width="28" height="28" aria-hidden="true">
+      <rect x="2" y="8" width="28" height="16" rx="2" className="fill-[#1f3038] dark:fill-teal-300" />
+      <path
+        d="M8 11v10M13 11v10M18 11v10M23 11v10"
+        className="stroke-white dark:stroke-[#06101f]"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
 function Dashboard() {
   const { currentUser, signOut } = useAuth()
+  const navigate = useNavigate()
   const [shipments, setShipments] = useState([])
+  const [bucket, setBucket] = useState('all')
   const [carrierFilter, setCarrierFilter] = useState('all')
-  const [statusFilter, setStatusFilter] = useState('all')
+  const [search, setSearch] = useState('')
+  const [quickBl, setQuickBl] = useState('')
   const [isLoading, setIsLoading] = useState(true)
   const [isSigningOut, setIsSigningOut] = useState(false)
-  const [deletingId, setDeletingId] = useState('')
+  const [busyId, setBusyId] = useState('')
   const [error, setError] = useState('')
+  const kpiRef = useRef(null)
+  const listRef = useRef(null)
+  const countedRef = useRef(false)
+
+  useSmoothScroll()
 
   useEffect(() => {
     if (!currentUser?.uid) {
@@ -214,7 +181,7 @@ function Dashboard() {
       orderBy('eta', 'asc'),
     )
 
-    const unsubscribe = onSnapshot(
+    return onSnapshot(
       shipmentsQuery,
       (snapshot) => {
         setShipments(snapshot.docs.map(mapShipment))
@@ -222,13 +189,95 @@ function Dashboard() {
       },
       (snapshotError) => {
         console.error('Failed to load shipments from Firestore.', snapshotError)
-        setError('Unable to load shipments right now. Please try again shortly.')
+        setError('Shipments could not be loaded. Check your connection and refresh.')
         setIsLoading(false)
       },
     )
-
-    return unsubscribe
   }, [currentUser?.uid])
+
+  const counts = useMemo(() => {
+    const result = { all: shipments.length, overdue: 0, week: 0, fortnight: 0, later: 0 }
+    shipments.forEach((shipment) => {
+      result[shipment.bucket] += 1
+    })
+    return result
+  }, [shipments])
+
+  const carriers = useMemo(
+    () => Array.from(new Set(shipments.map((shipment) => shipment.carrier))).sort(),
+    [shipments],
+  )
+
+  const searchTerm = search.trim().toLowerCase()
+  const visible = shipments.filter((shipment) => {
+    if (bucket !== 'all' && shipment.bucket !== bucket) return false
+    if (carrierFilter !== 'all' && shipment.carrier !== carrierFilter) return false
+    if (!searchTerm) return true
+    return [shipment.invoiceNo, shipment.blNo, shipment.consigneeName]
+      .join(' ')
+      .toLowerCase()
+      .includes(searchTerm)
+  })
+
+  const laneShipments = shipments.map((shipment) => ({
+    id: shipment.id,
+    label: shipment.invoiceNo,
+    daysLeft: shipment.daysLeft,
+    bucket: shipment.bucket,
+    href: `/shipments/${shipment.id}`,
+    lines: [
+      `${shipment.blNo} · ${getCarrierLabel(shipment.carrier)}`,
+      `ETA ${shipment.eta ? dateFormatter.format(shipment.eta) : '—'} · ${formatDaysLeft(shipment.daysLeft)}`,
+      shipment.latestEvent
+        ? `${shipment.latestEvent.title}${shipment.latestEvent.location ? `, ${shipment.latestEvent.location}` : ''}`
+        : 'Waiting for first carrier check',
+    ],
+  }))
+  const visibleKey = visible.map((shipment) => shipment.id).join('|')
+
+  // KPI figures count up once, when the first data arrives.
+  useLayoutEffect(() => {
+    const root = kpiRef.current
+    if (!root || isLoading || countedRef.current) return
+    countedRef.current = true
+    if (prefersReducedMotion()) return
+
+    root.querySelectorAll('[data-count]').forEach((node, index) => {
+      const target = Number(node.dataset.count)
+      const counter = { value: 0 }
+      gsap.to(counter, {
+        value: target,
+        duration: 1.1,
+        delay: index * 0.05,
+        ease: 'expo.out',
+        onUpdate: () => {
+          node.textContent = String(Math.round(counter.value))
+        },
+      })
+    })
+  }, [isLoading])
+
+  // Rows ease in whenever the visible set changes (load, filter, search).
+  useLayoutEffect(() => {
+    const root = listRef.current
+    if (!root || prefersReducedMotion()) return undefined
+
+    const ctx = gsap.context(() => {
+      gsap.from('[data-row]', {
+        y: 10,
+        opacity: 0,
+        duration: 0.6,
+        stagger: 0.035,
+        ease: 'expo.out',
+        clearProps: 'transform,opacity',
+      })
+    }, root)
+
+    return () => ctx.revert()
+  }, [visibleKey])
+
+  const nextArrival = shipments.find((shipment) => shipment.daysLeft !== null && shipment.daysLeft >= 0)
+  const hasFilters = bucket !== 'all' || carrierFilter !== 'all' || searchTerm
 
   const handleSignOut = async () => {
     setError('')
@@ -238,366 +287,460 @@ function Dashboard() {
       await signOut()
     } catch (signOutError) {
       console.error('Sign-out failed.', signOutError)
-      setError('Sign-out failed. Please try again.')
+      setError('Sign-out failed. Try again.')
     } finally {
       setIsSigningOut(false)
     }
   }
 
-  const handleArchive = async (shipmentId) => {
-    const confirmed = window.confirm(
-      'Move this shipment to the archive? You can restore it later.',
-    )
+  const handleQuickTrack = (event) => {
+    event.preventDefault()
+    const bl = quickBl.toUpperCase().replace(/[^A-Z0-9-]/g, '')
+    navigate(bl ? `/add?bl=${encodeURIComponent(bl)}` : '/add')
+  }
 
-    if (!confirmed) {
-      return
-    }
-
+  const runRowAction = async (shipmentId, action) => {
     setError('')
-    setDeletingId(shipmentId)
+    setBusyId(shipmentId)
 
     try {
-      await setShipmentArchived(shipmentId, true)
-    } catch (archiveError) {
-      console.error('Failed to archive shipment.', archiveError)
-      setError('Shipment could not be archived. Please try again.')
+      await action()
+    } catch (actionError) {
+      console.error('Shipment action failed.', actionError)
+      setError('That did not work. Try again.')
     } finally {
-      setDeletingId('')
+      setBusyId('')
     }
   }
 
-  const handleDelete = async (shipmentId) => {
-    const confirmed = window.confirm('Delete this shipment? This action cannot be undone.')
-
-    if (!confirmed) {
-      return
-    }
-
-    setError('')
-    setDeletingId(shipmentId)
-
-    try {
-      await deleteDoc(doc(db, 'shipments', shipmentId))
-    } catch (deleteError) {
-      console.error('Failed to delete shipment.', deleteError)
-      setError('Shipment could not be deleted. Please try again.')
-    } finally {
-      setDeletingId('')
+  const handleArchive = (shipmentId) => {
+    if (window.confirm('Move this shipment to the archive? You can restore it later.')) {
+      runRowAction(shipmentId, () => setShipmentArchived(shipmentId, true))
     }
   }
 
-  const carriers = Array.from(
-    new Set(shipments.map((shipment) => shipment.carrier).filter(Boolean)),
-  ).sort((left, right) => left.localeCompare(right))
+  const handleDelete = (shipmentId) => {
+    if (window.confirm('Delete this shipment? This cannot be undone.')) {
+      runRowAction(shipmentId, () => deleteDoc(doc(db, 'shipments', shipmentId)))
+    }
+  }
 
-  const filteredShipments = shipments.filter((shipment) => {
-    const matchesCarrier =
-      carrierFilter === 'all' || shipment.carrier.toUpperCase() === carrierFilter
-    const matchesStatus =
-      statusFilter === 'all' || shipment.statusKey === statusFilter
+  const clearFilters = () => {
+    setBucket('all')
+    setCarrierFilter('all')
+    setSearch('')
+  }
 
-    return matchesCarrier && matchesStatus
-  })
+  const displayName = currentUser?.displayName || currentUser?.email || 'ShipTrack user'
+  const navClass = ({ isActive }) =>
+    `rounded-md px-3 py-2 text-sm transition ${
+      isActive
+        ? 'bg-slate-100 font-semibold text-slate-950 dark:bg-white/10 dark:text-white'
+        : 'text-slate-600 hover:text-slate-950 dark:text-slate-300 dark:hover:text-white'
+    }`
 
-  const summaryCards = [
-    {
-      label: 'Total shipments',
-      value: shipments.length,
-      tone: 'text-slate-900 dark:text-white',
-    },
-    {
-      label: 'Arriving this week',
-      value: shipments.filter((shipment) => shipment.statusKey === 'arriving-this-week')
-        .length,
-      tone: 'text-rose-600 dark:text-rose-200',
-    },
-    {
-      label: 'Arriving in 14 days',
-      value: shipments.filter((shipment) => shipment.statusKey === 'arriving-in-14-days')
-        .length,
-      tone: 'text-amber-600 dark:text-amber-200',
-    },
-    {
-      label: 'Overdue',
-      value: shipments.filter((shipment) => shipment.statusKey === 'overdue').length,
-      tone: 'text-rose-600 dark:text-rose-200',
-    },
-  ]
+  const iconButton =
+    'inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-500 transition hover:bg-slate-100 hover:text-slate-950 active:scale-95 disabled:opacity-50 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-white'
 
-  const displayName = currentUser?.displayName ?? 'ShipTrack User'
-  const userEmail = currentUser?.email ?? 'No email'
-  const userInitial = (displayName[0] ?? userEmail[0] ?? 'S').toUpperCase()
+  const rowActions = (shipment) => (
+    <div className="inline-flex gap-0.5">
+      <Link to={`/edit/${shipment.id}`} className={iconButton} title="Edit" aria-label={`Edit ${shipment.invoiceNo}`}>
+        <Icon icon="solar:pen-2-linear" width="18" height="18" aria-hidden="true" />
+      </Link>
+      <button
+        type="button"
+        onClick={() => handleArchive(shipment.id)}
+        disabled={busyId === shipment.id}
+        className={iconButton}
+        title="Move to archive"
+        aria-label={`Archive ${shipment.invoiceNo}`}
+      >
+        <Icon icon="solar:archive-down-minimlistic-linear" width="18" height="18" aria-hidden="true" />
+      </button>
+      <button
+        type="button"
+        onClick={() => handleDelete(shipment.id)}
+        disabled={busyId === shipment.id}
+        className={`${iconButton} hover:!bg-rose-50 hover:!text-rose-700 dark:hover:!bg-rose-500/10 dark:hover:!text-rose-300`}
+        title="Delete"
+        aria-label={`Delete ${shipment.invoiceNo}`}
+      >
+        <Icon icon="solar:trash-bin-minimalistic-linear" width="18" height="18" aria-hidden="true" />
+      </button>
+    </div>
+  )
+
+  const eventSummary = (shipment) =>
+    shipment.latestEvent
+      ? [
+          shipment.latestEvent.location,
+          shipment.latestEvent.occurredAt ? shortDateFormatter.format(shipment.latestEvent.occurredAt) : '',
+        ]
+          .filter(Boolean)
+          .join(' · ')
+      : ''
 
   return (
-    <main className="app-shell mx-auto min-h-screen w-full max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-      <div className="space-y-6">
-        <header className="app-motion-card flex flex-col gap-4 rounded-[2rem] border border-slate-200/80 bg-white/90 p-5 shadow-xl shadow-slate-900/5 backdrop-blur dark:border-white/10 dark:bg-slate-950/70 dark:shadow-black/20 sm:p-6 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <p className="text-sm font-medium tracking-[0.24em] text-sky-600 uppercase dark:text-sky-200">
-              ShipTrack
-            </p>
-            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-950 dark:text-white">
-              Shipment dashboard
-            </h1>
-            <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
-              Monitor ETAs, spot overdue freight, and act on upcoming arrivals.
-            </p>
-          </div>
-
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 dark:border-white/10 dark:bg-white/5">
-              {currentUser?.photoURL ? (
-                <img
-                  src={currentUser.photoURL}
-                  alt={displayName}
-                  className="h-10 w-10 rounded-full object-cover"
-                />
-              ) : (
-                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-950 text-sm font-semibold text-white dark:bg-white dark:text-slate-950">
-                  {userInitial}
-                </div>
-              )}
-
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-slate-950 dark:text-white">
-                  {displayName}
-                </p>
-                <p className="truncate text-xs text-slate-500 dark:text-slate-400">
-                  {userEmail}
-                </p>
-              </div>
-            </div>
-
-            <Link
-              to="/archive"
-              className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:text-slate-100 dark:hover:bg-white/10"
-            >
-              Archive
-            </Link>
-
-            <Link
-              to="/profile"
-              className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:text-slate-100 dark:hover:bg-white/10"
-            >
-              Profile
-            </Link>
-
+    <div className="min-h-screen bg-[#f7f9fa] text-[#1f3038] dark:bg-[#06101f] dark:text-slate-100">
+      <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 dark:border-white/10 dark:bg-[#0a1628]/95">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3 sm:px-6 lg:px-8">
+          <Link to="/dashboard" className="flex items-center gap-2 text-base font-bold">
+            <ShipTrackMark />
+            ShipTrack
+          </Link>
+          <nav aria-label="Main" className="order-3 flex w-full items-center gap-1 overflow-x-auto sm:order-none sm:w-auto">
+            <NavLink to="/dashboard" className={navClass}>
+              <span className="inline-flex items-center gap-2">
+                <Icon icon="solar:box-linear" width="18" height="18" aria-hidden="true" />
+                Shipments
+              </span>
+            </NavLink>
+            <NavLink to="/archive" className={navClass}>
+              <span className="inline-flex items-center gap-2">
+                <Icon icon="solar:archive-linear" width="18" height="18" aria-hidden="true" />
+                Archive
+              </span>
+            </NavLink>
+            <NavLink to="/profile" className={navClass}>
+              <span className="inline-flex items-center gap-2 whitespace-nowrap">
+                <Icon icon="solar:bell-linear" width="18" height="18" aria-hidden="true" />
+                Alerts &amp; profile
+              </span>
+            </NavLink>
+          </nav>
+          <div className="ml-auto flex min-w-0 items-center gap-2">
+            {currentUser?.photoURL ? (
+              <img
+                src={currentUser.photoURL}
+                alt=""
+                referrerPolicy="no-referrer"
+                className="h-8 w-8 flex-none rounded-full object-cover"
+              />
+            ) : (
+              <Icon icon="solar:user-circle-linear" width="32" height="32" className="flex-none text-slate-400" aria-hidden="true" />
+            )}
+            <span className="hidden max-w-[12rem] truncate text-sm text-slate-600 sm:inline dark:text-slate-300">
+              {displayName}
+            </span>
             <button
               type="button"
               onClick={handleSignOut}
               disabled={isSigningOut}
-              className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-70 dark:border-white/10 dark:bg-white/5 dark:text-slate-100 dark:hover:bg-white/10"
+              className={iconButton}
+              title="Sign out"
+              aria-label="Sign out"
             >
-              {isSigningOut ? 'Signing out...' : 'Sign out'}
+              <Icon icon="solar:logout-2-linear" width="18" height="18" aria-hidden="true" />
             </button>
           </div>
-        </header>
+        </div>
+      </header>
 
-        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          {summaryCards.map((card) => (
-            <article
-              key={card.label}
-              className="app-motion-card rounded-3xl border border-slate-200/70 bg-white/90 p-5 shadow-lg shadow-slate-900/5 dark:border-white/10 dark:bg-slate-950/70 dark:shadow-black/20"
+      <main className="mx-auto max-w-7xl space-y-5 px-4 py-6 sm:px-6 lg:px-8">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-semibold tracking-tight">Shipments</h1>
+            <p className="mt-1 truncate text-sm text-slate-600 dark:text-slate-300">
+              {isLoading
+                ? 'Loading…'
+                : nextArrival
+                  ? `${counts.all} active · next arrival ${nextArrival.invoiceNo}, ${formatDaysLeft(nextArrival.daysLeft).toLowerCase()}`
+                  : `${counts.all} active`}
+            </p>
+          </div>
+
+          <form onSubmit={handleQuickTrack} className="flex w-full gap-2 lg:max-w-md">
+            <label htmlFor="quick-bl" className="sr-only">
+              B/L number to track
+            </label>
+            <div className="relative min-w-0 flex-1">
+              <Icon
+                icon="solar:box-linear"
+                width="18"
+                height="18"
+                aria-hidden="true"
+                className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-slate-400"
+              />
+              <input
+                id="quick-bl"
+                value={quickBl}
+                onChange={(event) => setQuickBl(event.target.value)}
+                placeholder="Track a B/L number"
+                maxLength={40}
+                autoComplete="off"
+                spellCheck="false"
+                className="h-10 w-full rounded-lg border border-slate-300 bg-white pr-3 pl-9 text-sm uppercase transition placeholder:normal-case focus:border-teal-600 focus:ring-2 focus:ring-teal-200 focus:outline-none dark:border-white/15 dark:bg-[#0d1b30] dark:focus:border-teal-300 dark:focus:ring-teal-300/20"
+              />
+            </div>
+            <button
+              type="submit"
+              className="inline-flex h-10 flex-none items-center gap-2 rounded-lg bg-teal-600 px-4 text-sm font-semibold text-white transition hover:bg-teal-700 active:scale-[0.97] dark:bg-teal-300 dark:text-[#06101f] dark:hover:bg-teal-200"
             >
-              <p className="text-sm text-slate-500 dark:text-slate-400">{card.label}</p>
-              <p className={`mt-3 text-3xl font-semibold ${card.tone}`}>{card.value}</p>
-            </article>
-          ))}
-        </section>
+              <Icon icon="solar:add-circle-linear" width="18" height="18" aria-hidden="true" />
+              <span className="whitespace-nowrap">Add shipment</span>
+            </button>
+          </form>
+        </div>
 
-        <section className="app-motion-card rounded-[2rem] border border-slate-200/80 bg-white/90 p-5 shadow-xl shadow-slate-900/5 dark:border-white/10 dark:bg-slate-950/70 dark:shadow-black/20 sm:p-6">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex flex-col gap-4 md:flex-row md:items-end">
-              <label className="flex min-w-[180px] flex-col gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
-                Carrier
-                <select
-                  value={carrierFilter}
-                  onChange={(event) => setCarrierFilter(event.target.value)}
-                  className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-200 dark:border-white/10 dark:bg-slate-900 dark:text-white dark:focus:border-sky-400 dark:focus:ring-sky-500/20"
-                >
-                  <option value="all">All carriers</option>
-                  {carriers.map((carrier) => (
-                    <option key={carrier} value={carrier.toUpperCase()}>
-                      {getCarrierLabel(carrier)}
-                    </option>
-                  ))}
-                </select>
-              </label>
+        {error ? (
+          <div role="alert" className="flex items-center gap-2 rounded-lg bg-rose-50 px-4 py-3 text-sm text-rose-800 dark:bg-rose-500/10 dark:text-rose-200">
+            <Icon icon="solar:danger-triangle-linear" width="18" height="18" aria-hidden="true" />
+            {error}
+          </div>
+        ) : null}
 
-              <label className="flex min-w-[220px] flex-col gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
-                Status
-                <select
-                  value={statusFilter}
-                  onChange={(event) => setStatusFilter(event.target.value)}
-                  className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-200 dark:border-white/10 dark:bg-slate-900 dark:text-white dark:focus:border-sky-400 dark:focus:ring-sky-500/20"
-                >
-                  {statusOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
+        <div
+          ref={kpiRef}
+          role="group"
+          aria-label="Filter by arrival"
+          className="grid grid-cols-2 gap-x-6 gap-y-4 rounded-xl bg-white px-5 py-4 sm:grid-cols-3 lg:grid-cols-5 dark:bg-[#0d1b30]"
+        >
+          {buckets.map((item) => {
+            const active = bucket === item.key
+            const count = counts[item.key]
 
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-              <p className="text-sm text-slate-500 dark:text-slate-400">
-                Showing {filteredShipments.length} of {shipments.length} shipments
-              </p>
-
-              <Link
-                to="/add"
-                className="inline-flex items-center justify-center rounded-2xl bg-slate-950 px-4 py-3 text-sm font-medium text-white shadow-lg shadow-slate-950/10 transition hover:-translate-y-0.5 hover:bg-slate-800 dark:bg-cyan-300 dark:text-slate-950 dark:shadow-cyan-400/10 dark:hover:bg-cyan-200"
+            return (
+              <button
+                key={item.key}
+                type="button"
+                aria-pressed={active}
+                onClick={() => setBucket(active && item.key !== 'all' ? 'all' : item.key)}
+                className={`min-w-0 rounded-md text-left transition duration-300 ${active ? '' : 'opacity-60 hover:opacity-100'}`}
               >
-                Add shipment
-              </Link>
-            </div>
-          </div>
-
-          {error ? (
-            <div className="mt-5 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-100">
-              {error}
-            </div>
-          ) : null}
-
-          <div className="mt-6 overflow-hidden rounded-3xl border border-slate-200/70 dark:border-white/10">
-            {isLoading ? (
-              <div className="flex min-h-56 items-center justify-center bg-white/90 px-6 py-12 text-sm text-slate-500 dark:bg-slate-950/80 dark:text-slate-300">
-                Loading shipments...
-              </div>
-            ) : shipments.length === 0 ? (
-              <div className="flex min-h-72 flex-col items-center justify-center bg-white/90 px-6 py-12 text-center dark:bg-slate-950/80">
-                <div className="rounded-full bg-slate-100 px-4 py-2 text-2xl dark:bg-white/5">
-                  🚢
-                </div>
-                <h2 className="mt-4 text-xl font-semibold text-slate-950 dark:text-white">
-                  No shipments yet
-                </h2>
-                <p className="mt-2 max-w-md text-sm leading-6 text-slate-500 dark:text-slate-300">
-                  Add your first shipment to track invoice details, upcoming ETAs,
-                  and overdue containers from one place.
-                </p>
-                <Link
-                  to="/add"
-                  className="mt-6 inline-flex items-center justify-center rounded-2xl bg-slate-950 px-4 py-3 text-sm font-medium text-white shadow-lg shadow-slate-950/10 transition hover:-translate-y-0.5 hover:bg-slate-800 dark:bg-cyan-300 dark:text-slate-950 dark:shadow-cyan-400/10 dark:hover:bg-cyan-200"
+                <span
+                  data-count={count}
+                  className={`block text-3xl font-semibold tabular-nums ${
+                    item.key === 'overdue' && count > 0
+                      ? 'text-rose-600 dark:text-rose-300'
+                      : item.key === 'week' && count > 0
+                        ? 'text-amber-700 dark:text-amber-300'
+                        : ''
+                  }`}
                 >
-                  Add shipment
-                </Link>
-              </div>
-            ) : filteredShipments.length === 0 ? (
-              <div className="flex min-h-56 items-center justify-center bg-white/90 px-6 py-12 text-center text-sm text-slate-500 dark:bg-slate-950/80 dark:text-slate-300">
-                No shipments match the current carrier and status filters.
-              </div>
-            ) : (
-              <div className="overflow-x-auto bg-white/90 dark:bg-slate-950/80">
-                <table className="min-w-full text-left">
-                  <thead className="bg-slate-50 text-xs tracking-[0.2em] text-slate-500 uppercase dark:bg-white/5 dark:text-slate-400">
-                    <tr>
-                      <th className="px-4 py-4 font-medium sm:px-6">Invoice No</th>
-                      <th className="px-4 py-4 font-medium sm:px-6">B/L No</th>
-                      <th className="px-4 py-4 font-medium sm:px-6">Carrier</th>
-                      <th className="px-4 py-4 font-medium sm:px-6">ETA</th>
-                      <th className="px-4 py-4 font-medium sm:px-6">Days left</th>
-                      <th className="px-4 py-4 font-medium sm:px-6">Latest event</th>
-                      <th className="px-4 py-4 font-medium sm:px-6">INV Amount</th>
-                      <th className="px-4 py-4 font-medium sm:px-6">Actions</th>
-                    </tr>
-                  </thead>
+                  {count}
+                </span>
+                <span
+                  className={`mt-1 block truncate border-b-2 pb-1 text-sm transition-colors duration-300 ${
+                    active
+                      ? 'border-teal-600 font-semibold dark:border-teal-300'
+                      : 'border-transparent text-slate-600 dark:text-slate-300'
+                  }`}
+                >
+                  {item.label}
+                </span>
+              </button>
+            )
+          })}
+        </div>
 
-                  <tbody className="divide-y divide-slate-200/70 text-sm dark:divide-white/10">
-                    {filteredShipments.map((shipment) => (
-                      <tr key={shipment.id} className="align-middle">
-                        <td className="whitespace-nowrap px-4 py-4 font-medium text-slate-950 dark:text-white sm:px-6">
-                          {shipment.invoiceNo}
-                        </td>
-                        <td className="whitespace-nowrap px-4 py-4 text-slate-600 dark:text-slate-300 sm:px-6">
-                          {shipment.blNo}
-                        </td>
-                        <td className="whitespace-nowrap px-4 py-4 sm:px-6">
-                          <span
-                            className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${getCarrierBadgeClass(shipment.carrier)}`}
-                          >
-                            {getCarrierLabel(shipment.carrier)}
-                          </span>
-                        </td>
-                        <td className="whitespace-nowrap px-4 py-4 text-slate-600 dark:text-slate-300 sm:px-6">
-                          {formatEta(shipment.eta)}
-                        </td>
-                        <td className="whitespace-nowrap px-4 py-4 sm:px-6">
-                          <span
-                            className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${getDaysLeftClasses(shipment.daysLeft)}`}
-                          >
-                            {formatDaysLeft(shipment.daysLeft)}
-                          </span>
-                        </td>
-                        <td className="min-w-[200px] px-4 py-4 sm:px-6">
-                          {shipment.latestEvent ? (
-                            <div>
-                              <p className="font-medium text-slate-900 dark:text-white">
-                                {shipment.latestEvent.title}
-                              </p>
-                              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                                {[shipment.latestEvent.location, shipment.latestEvent.when]
-                                  .filter(Boolean)
-                                  .join(' · ')}
-                                {shipment.eventCount > 1
-                                  ? ` · ${shipment.eventCount} events`
-                                  : ''}
-                              </p>
-                            </div>
-                          ) : (
-                            <span className="text-xs text-slate-400 dark:text-slate-500">
-                              {shipment.trackingStatus === 'error'
-                                ? 'Tracking failed'
-                                : 'No events yet'}
-                            </span>
-                          )}
-                        </td>
-                        <td className="whitespace-nowrap px-4 py-4 text-slate-600 dark:text-slate-300 sm:px-6">
-                          {formatAmount(shipment.invAmount)}
-                        </td>
-                        <td className="px-4 py-4 sm:px-6">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <Link
-                              to={`/shipments/${shipment.id}`}
-                              className="inline-flex items-center rounded-xl border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50 dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/5"
-                            >
-                              View
-                            </Link>
-                            <Link
-                              to={`/edit/${shipment.id}`}
-                              className="inline-flex items-center rounded-xl border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50 dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/5"
-                            >
-                              Edit
-                            </Link>
-                            <button
-                              type="button"
-                              onClick={() => handleArchive(shipment.id)}
-                              disabled={deletingId === shipment.id}
-                              className="inline-flex items-center rounded-xl border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-70 dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/5"
-                            >
-                              Archive
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDelete(shipment.id)}
-                              disabled={deletingId === shipment.id}
-                              className="inline-flex items-center rounded-xl border border-rose-200 px-3 py-2 text-xs font-medium text-rose-700 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-70 dark:border-rose-500/30 dark:text-rose-200 dark:hover:bg-rose-500/10"
-                            >
-                              {deletingId === shipment.id ? 'Deleting...' : 'Delete'}
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+        {shipments.length > 0 ? (
+          <div className="rounded-xl bg-white px-5 pt-4 pb-4 dark:bg-[#0d1b30]">
+            <ArrivalLane
+              shipments={laneShipments}
+              title="Arrival lane"
+              caption="Three weeks back to five weeks ahead · hover a shipment for details"
+            />
           </div>
+        ) : null}
+
+        <section aria-labelledby="list-title" className="overflow-hidden rounded-xl bg-white dark:bg-[#0d1b30]">
+          <div className="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 sm:flex-row sm:items-center sm:justify-between dark:border-white/10">
+            <h2 id="list-title" className="min-w-0 truncate text-sm font-semibold">
+              {bucket === 'all' ? 'All shipments' : buckets.find((item) => item.key === bucket)?.label}
+              <span className="ml-2 font-normal text-slate-500 dark:text-slate-400">
+                {visible.length} of {shipments.length}
+              </span>
+            </h2>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <label className="sr-only" htmlFor="search">
+                Search shipments
+              </label>
+              <div className="relative">
+                <Icon
+                  icon="solar:magnifer-linear"
+                  width="18"
+                  height="18"
+                  aria-hidden="true"
+                  className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-slate-400"
+                />
+                <input
+                  id="search"
+                  type="search"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder="Invoice, B/L or consignee"
+                  className="h-10 w-full rounded-lg border border-slate-300 bg-white pr-3 pl-9 text-sm transition sm:w-64 focus:border-teal-600 focus:ring-2 focus:ring-teal-200 focus:outline-none dark:border-white/15 dark:bg-[#06101f] dark:focus:border-teal-300 dark:focus:ring-teal-300/20"
+                />
+              </div>
+              <label className="sr-only" htmlFor="carrier">
+                Carrier
+              </label>
+              <select
+                id="carrier"
+                value={carrierFilter}
+                onChange={(event) => setCarrierFilter(event.target.value)}
+                className="h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm dark:border-white/15 dark:bg-[#06101f]"
+              >
+                <option value="all">All carriers</option>
+                {carriers.map((carrier) => (
+                  <option key={carrier} value={carrier}>
+                    {getCarrierLabel(carrier)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {isLoading ? (
+            <div className="space-y-3 px-5 py-6" aria-label="Loading shipments">
+              {[0, 1, 2].map((row) => (
+                <div key={row} className="h-12 animate-pulse rounded-lg bg-slate-100 dark:bg-white/5" />
+              ))}
+            </div>
+          ) : shipments.length === 0 ? (
+            <div className="px-5 py-16 text-center">
+              <Icon icon="solar:box-linear" width="36" height="36" className="mx-auto text-slate-400" aria-hidden="true" />
+              <p className="mt-3 text-base font-semibold">No shipments yet</p>
+              <p className="mx-auto mt-1 max-w-sm text-sm text-slate-600 dark:text-slate-300">
+                Paste a B/L number above. ShipTrack reads the carrier and loads every container move
+                and the ETA.
+              </p>
+            </div>
+          ) : visible.length === 0 ? (
+            <div className="px-5 py-16 text-center">
+              <p className="text-sm break-words text-slate-600 dark:text-slate-300">
+                Nothing matches {searchTerm ? `“${search.trim()}”` : 'these filters'}.
+              </p>
+              {hasFilters ? (
+                <button
+                  type="button"
+                  onClick={clearFilters}
+                  className="mt-3 text-sm font-semibold text-teal-700 hover:underline dark:text-teal-300"
+                >
+                  Clear filters
+                </button>
+              ) : null}
+            </div>
+          ) : (
+            <div ref={listRef}>
+              <table className="hidden w-full table-fixed text-left text-sm md:table">
+                <colgroup>
+                  <col className="w-[20%]" />
+                  <col className="w-[17%]" />
+                  <col className="w-[27%]" />
+                  <col className="w-[15%]" />
+                  <col className="w-[11%]" />
+                  <col className="w-[10%]" />
+                </colgroup>
+                <thead className="text-slate-500 dark:text-slate-400">
+                  <tr className="border-b border-slate-200 dark:border-white/10">
+                    <th scope="col" className="px-5 py-3 font-medium">Shipment</th>
+                    <th scope="col" className="px-3 py-3 font-medium">B/L</th>
+                    <th scope="col" className="px-3 py-3 font-medium">Latest event</th>
+                    <th scope="col" className="px-3 py-3 font-medium">ETA</th>
+                    <th scope="col" className="px-3 py-3 text-right font-medium">Amount</th>
+                    <th scope="col" className="px-5 py-3 text-right font-medium">
+                      <span className="sr-only">Actions</span>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visible.map((shipment) => (
+                    <tr
+                      key={shipment.id}
+                      data-row
+                      className="group border-b border-slate-100 align-top transition-colors duration-200 last:border-0 hover:bg-slate-50 dark:border-white/5 dark:hover:bg-white/[0.03]"
+                    >
+                      <td className="px-5 py-3">
+                        <Link
+                          to={`/shipments/${shipment.id}`}
+                          className="block truncate font-semibold text-slate-950 hover:underline dark:text-white"
+                          title={shipment.invoiceNo}
+                        >
+                          {shipment.invoiceNo}
+                        </Link>
+                        <p className="truncate text-slate-500 dark:text-slate-400" title={shipment.consigneeName}>
+                          {shipment.consigneeName || '—'}
+                        </p>
+                      </td>
+                      <td className="px-3 py-3">
+                        <p className="truncate tabular-nums" title={shipment.blNo}>
+                          {shipment.blNo}
+                        </p>
+                        <p className="truncate text-slate-500 dark:text-slate-400">
+                          {getCarrierLabel(shipment.carrier)}
+                        </p>
+                      </td>
+                      <td className="px-3 py-3">
+                        {shipment.latestEvent ? (
+                          <>
+                            <p className="truncate" title={shipment.latestEvent.title}>
+                              {shipment.latestEvent.title}
+                            </p>
+                            <p className="truncate text-slate-500 dark:text-slate-400" title={eventSummary(shipment)}>
+                              {eventSummary(shipment)}
+                            </p>
+                          </>
+                        ) : (
+                          <p className="truncate text-slate-400 dark:text-slate-500">
+                            {shipment.trackingStatus === 'error' ? 'Carrier did not answer' : 'Waiting for first check'}
+                          </p>
+                        )}
+                      </td>
+                      <td className="px-3 py-3">
+                        <p className="truncate tabular-nums">
+                          {shipment.eta ? dateFormatter.format(shipment.eta) : '—'}
+                        </p>
+                        <p className={`truncate ${urgencyText(shipment.bucket)}`}>{formatDaysLeft(shipment.daysLeft)}</p>
+                      </td>
+                      <td className="truncate px-3 py-3 text-right tabular-nums">{formatAmount(shipment.invAmount)}</td>
+                      <td className="px-5 py-2 text-right">{rowActions(shipment)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              <ul className="divide-y divide-slate-100 md:hidden dark:divide-white/5">
+                {visible.map((shipment) => (
+                  <li key={shipment.id} data-row className="px-5 py-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <Link
+                          to={`/shipments/${shipment.id}`}
+                          className="block truncate font-semibold text-slate-950 hover:underline dark:text-white"
+                        >
+                          {shipment.invoiceNo}
+                        </Link>
+                        <p className="truncate text-sm text-slate-500 dark:text-slate-400">
+                          {shipment.blNo} · {getCarrierLabel(shipment.carrier)}
+                        </p>
+                      </div>
+                      <div className="flex-none text-right">
+                        <p className="text-sm tabular-nums">
+                          {shipment.eta ? shortDateFormatter.format(shipment.eta) : '—'}
+                        </p>
+                        <p className={`text-sm ${urgencyText(shipment.bucket)}`}>{formatDaysLeft(shipment.daysLeft)}</p>
+                      </div>
+                    </div>
+                    <p className="mt-2 text-sm break-words text-slate-700 dark:text-slate-200">
+                      {shipment.latestEvent
+                        ? `${shipment.latestEvent.title}${eventSummary(shipment) ? ` · ${eventSummary(shipment)}` : ''}`
+                        : 'Waiting for first check'}
+                    </p>
+                    <div className="mt-2 flex items-center justify-between">
+                      <span className="text-sm text-slate-500 tabular-nums dark:text-slate-400">
+                        {formatAmount(shipment.invAmount)}
+                      </span>
+                      {rowActions(shipment)}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </section>
-      </div>
-    </main>
+      </main>
+    </div>
   )
 }
 
