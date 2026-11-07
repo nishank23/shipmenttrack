@@ -6,7 +6,14 @@ import { info, error as _error, warn } from 'firebase-functions/logger'
 import { onRequest } from 'firebase-functions/v2/https'
 import { defineSecret } from 'firebase-functions/params'
 import { onSchedule } from 'firebase-functions/v2/scheduler'
-import { extractTrackingPayload } from './lib/trackingExtractors.js'
+import puppeteer from 'puppeteer-core'
+import {
+  extractTrackingPayload,
+  extractPilContainers,
+  extractPilContainerTracking,
+  isCmaCgmBlockedPage,
+  mergeTrackingResults,
+} from './lib/trackingExtractors.js'
 
 initializeApp();
 
@@ -14,6 +21,14 @@ initializeApp();
 const db = getFirestore();
 const SMTP_EMAIL = defineSecret('SMTP_EMAIL')
 const SMTP_PASSWORD = defineSecret('SMTP_PASSWORD')
+/**
+ * Lightpanda CDP endpoint, e.g.
+ *   wss://cloud.lightpanda.io/ws?token=<TOKEN>   (Lightpanda cloud)
+ *   ws://<host>:9222                              (self-hosted `lightpanda serve`)
+ */
+const LIGHTPANDA_WS_URL = defineSecret('LIGHTPANDA_WS_URL')
+const TRACKING_SECRETS = [SMTP_EMAIL, SMTP_PASSWORD, LIGHTPANDA_WS_URL]
+const MAX_STORED_EVENTS = 200
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000
 const HTTP_TIMEOUT_MS = 15000
@@ -25,8 +40,10 @@ const carrierPrefixMap = [
   { carrier: 'ONE', prefixes: ['ONEY', 'BRDG'] },
   { carrier: 'EVERGREEN', prefixes: ['EGLV', 'EGSU', 'EGHU'] },
   { carrier: 'PIL', prefixes: ['SUB', 'PIL'] },
-  { caerrier: 'MAERSK', prefixes: ['MAEU', 'MAEU', 'MAHU', 'MAAU'] },
+  { carrier: 'CMA_CGM', prefixes: ['CMDU', 'CMAU', 'CGMU'] },
 ]
+
+const LIVE_TRACKING_CARRIERS = new Set(carrierPrefixMap.map((entry) => entry.carrier))
 
 const defaultHeaders = {
   'user-agent':
@@ -62,7 +79,7 @@ export const dailyShipmentCheck = onSchedule(
     schedule: '0 8 * * *',
     timeZone: MAPUTO_TIMEZONE,
     timeoutSeconds: 540,
-    secrets: [SMTP_EMAIL, SMTP_PASSWORD],
+    secrets: TRACKING_SECRETS,
   },
   async () => {
     const summary = await runShipmentCheck({
@@ -77,7 +94,7 @@ export const dailyShipmentCheck = onSchedule(
 export const manualCheck = onRequest(
   {
     timeoutSeconds: 540,
-    secrets: [SMTP_EMAIL, SMTP_PASSWORD],
+    secrets: TRACKING_SECRETS,
   },
   async (request, response) => {
     if (!['GET', 'POST'].includes(request.method)) {
@@ -459,7 +476,7 @@ async function buildShipmentAlertRecord(shipmentDoc, { forceRefresh }) {
     previousEta: null,
   }
 
-  if (detectCarrierFromBl(blNo)) {
+  if (LIVE_TRACKING_CARRIERS.has(carrier.toUpperCase())) {
     tracking = await resolveTrackingInfo({
       shipmentId: shipmentDoc.id,
       blNo,
@@ -525,7 +542,7 @@ async function resolveTrackingInfo({ shipmentId, blNo, carrier, firestoreEta, fo
 
   if (!forceRefresh && isFreshLiveCache(cachedData)) {
     return {
-      eta: normalizeDate(cachedData.eta),
+      eta: normalizeDate(cachedData.latestEta),
       etaSource: 'live-cache',
       etaChanged:false,
     }
@@ -536,7 +553,6 @@ async function resolveTrackingInfo({ shipmentId, blNo, carrier, firestoreEta, fo
       blNo,
       carrier,
     })
-    console.log(`Live tracking result for ${blNo}:`, liveResult)
     const liveEta = normalizeDate(liveResult.eta || firestoreEta)
     const previousEta = currentShipmentEta
     const etaChanged = 
@@ -544,11 +560,16 @@ async function resolveTrackingInfo({ shipmentId, blNo, carrier, firestoreEta, fo
       liveEta &&
       previousEta.getTime() !== liveEta.getTime()
 
-    
-    console.log(`Shipment ${shipmentId}`)
-    console.log('Previous ETA:', previousEta)
-    console.log('Live ETA:', liveEta)
-    console.log('ETA Changed:', etaChanged)
+    const events = normalizeEvents(liveResult.events).slice(-MAX_STORED_EVENTS)
+    const latestEvent = getLatestEvent(events)
+
+    info(`Tracked ${blNo}`, {
+      shipmentId,
+      previousEta,
+      liveEta,
+      etaChanged,
+      eventCount: events.length,
+    })
 
 
     /**
@@ -595,6 +616,12 @@ async function resolveTrackingInfo({ shipmentId, blNo, carrier, firestoreEta, fo
           etaChanged ? 1 : 0
         ),
         lastEtaSyncAt: Timestamp.now(),
+
+        // Denormalized so the dashboard can show status without reading the cache.
+        latestEvent: latestEvent || null,
+        eventCount: events.length,
+        trackingStatus: 'live',
+        trackingError: null,
       },
       { merge: true },
     )
@@ -629,6 +656,8 @@ async function resolveTrackingInfo({ shipmentId, blNo, carrier, firestoreEta, fo
           : 'fallback',
 
         source: liveResult.source || 'unknown',
+        events,
+        eventCount: events.length,
         error: null,
       },
       { merge: true }
@@ -665,6 +694,15 @@ async function resolveTrackingInfo({ shipmentId, blNo, carrier, firestoreEta, fo
       { merge: true }
     )
 
+    await shipmentRef.set(
+      {
+        trackingStatus: 'error',
+        trackingError: error.message || 'Tracking failed',
+        lastEtaSyncAt: Timestamp.now(),
+      },
+      { merge: true },
+    )
+
     return {
       eta: currentShipmentEta || firestoreEta,
       etaSource: 'firestore',
@@ -674,18 +712,18 @@ async function resolveTrackingInfo({ shipmentId, blNo, carrier, firestoreEta, fo
 }
 
 function isFreshLiveCache(cacheData) {
-  if (!cacheData || cacheData.status !== 'live') {
+  if (!cacheData || !['live', 'eta-changed'].includes(cacheData.status)) {
     return false
   }
 
   const expiresAt = normalizeDate(cacheData.expiresAt)
-  const eta = normalizeDate(cacheData.eta)
+  const eta = normalizeDate(cacheData.latestEta)
 
   return Boolean(expiresAt && eta && expiresAt.getTime() > Date.now())
 }
 
 async function scrapeLiveTracking({ blNo, carrier }) {
-  const detectedCarrier = detectCarrierFromBl(blNo) || carrier
+  const detectedCarrier = detectCarrierFromBl(blNo) || normalizeString(carrier).toUpperCase()
 
   switch (detectedCarrier) {
     case 'MSC':
@@ -696,8 +734,8 @@ async function scrapeLiveTracking({ blNo, carrier }) {
       return scrapeEvergreen(blNo)
     case 'PIL':
       return scrapePil(blNo)
-    case 'MAERSK':
-      return scrapeMaersk(blNo)
+    case 'CMA_CGM':
+      return scrapeCmaCgm(blNo)
     default:
       return {
         source: 'firestore',
@@ -867,7 +905,53 @@ async function scrapePil(blNo) {
       )
     )
   }
-return results
+
+  return mergeTrackingResults('PIL', blNo, results)
+}
+
+/**
+ * CMA CGM renders tracking client-side, so we load the page in Lightpanda
+ * (a lightweight CDP-compatible headless browser) and parse the resulting DOM.
+ */
+async function scrapeCmaCgm(blNo) {
+  const endpoint = normalizeString(LIGHTPANDA_WS_URL.value())
+
+  if (!endpoint) {
+    throw new Error('LIGHTPANDA_WS_URL secret is not configured.')
+  }
+
+  const url = new URL('https://www.cma-cgm.com/ebusiness/tracking/search')
+  url.searchParams.set('SearchBy', 'BL')
+  url.searchParams.set('Reference', normalizeString(blNo).toUpperCase())
+  url.searchParams.set('search', 'Search')
+
+  const browser = await puppeteer.connect({ browserWSEndpoint: endpoint })
+
+  try {
+    const context = await browser.createBrowserContext()
+    const page = await context.newPage()
+
+    await page.goto(url.toString(), {
+      waitUntil: 'networkidle0',
+      timeout: 45000,
+    })
+
+    const html = await page.content()
+    await page.close()
+    await context.close()
+
+    if (isCmaCgmBlockedPage(html)) {
+      throw new Error('CMA CGM blocked the automated request (bot protection).')
+    }
+
+    return extractTrackingPayload({
+      carrier: 'CMA_CGM',
+      payload: html,
+      blNo,
+    })
+  } finally {
+    await browser.disconnect()
+  }
 }
 function normalizeEvents(events) {
   return (Array.isArray(events) ? events : [])
@@ -879,10 +963,21 @@ function normalizeEvents(events) {
         title: normalizeString(event?.title || 'Status update'),
         description: normalizeString(event?.description || ''),
         location: normalizeString(event?.location || ''),
+        container: normalizeString(event?.container || ''),
         occurredAt: occurredAt ? Timestamp.fromDate(occurredAt) : null,
+        // Carrier timelines mix actual and planned moves; future dates are planned.
+        estimated: Boolean(occurredAt && occurredAt.getTime() > Date.now()),
       }
     })
     .filter((event) => event.title)
+}
+
+/**
+ * Most recent event that has actually happened (not a planned future move).
+ */
+function getLatestEvent(events) {
+  const actualEvents = events.filter((event) => event.occurredAt && !event.estimated)
+  return actualEvents.length > 0 ? actualEvents[actualEvents.length - 1] : null
 }
 
 function normalizeDate(value) {

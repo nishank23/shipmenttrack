@@ -10,21 +10,12 @@ import {
 } from 'firebase/firestore'
 import { db } from '../../firebase'
 import useAuth from '../hooks/useAuth'
-
-const carrierBadgeStyles = {
-  MSC: 'bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-200',
-  ONE: 'bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-200',
-  EVERGREEN:
-    'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200',
-  PIL: 'bg-orange-100 text-orange-700 dark:bg-orange-500/15 dark:text-orange-200',
-}
-
-const blCarrierMap = [
-  { prefixes: ['MEDU', 'MSDU', 'MSNU', 'MSMU', 'MSCU'], carrier: 'MSC' },
-  { prefixes: ['ONEY', 'BRDG'], carrier: 'ONE' },
-  { prefixes: ['EGLV', 'EGSU', 'EGHU'], carrier: 'EVERGREEN' },
-  { prefixes: ['SUB', 'PIL'], carrier: 'PIL' },
-]
+import {
+  carriers,
+  detectCarrierFromBlNumber,
+  getCarrierBadgeClass,
+  getCarrierLabel,
+} from '../lib/carriers'
 
 const initialValues = {
   invoiceNo: '',
@@ -72,29 +63,6 @@ function formatDateInput(value) {
 function createDateFromInput(value) {
   const [year, month, day] = value.split('-').map(Number)
   return new Date(year, month - 1, day, 12)
-}
-
-function detectCarrierFromBlNumber(value) {
-  const sanitizedValue = String(value).toUpperCase().replace(/[^A-Z0-9]/g, '')
-
-  for (const entry of blCarrierMap) {
-    const matchingPrefix = entry.prefixes.find((prefix) =>
-      sanitizedValue.startsWith(prefix),
-    )
-
-    if (matchingPrefix) {
-      return entry.carrier
-    }
-  }
-
-  return ''
-}
-
-function getCarrierBadgeClass(carrier) {
-  return (
-    carrierBadgeStyles[carrier] ??
-    'bg-slate-100 text-slate-700 dark:bg-white/10 dark:text-slate-200'
-  )
 }
 
 function validate(values) {
@@ -386,7 +354,7 @@ function ShipmentForm() {
                       <span
                         className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${getCarrierBadgeClass(values.carrier)}`}
                       >
-                        {values.carrier}
+                        {getCarrierLabel(values.carrier)}
                       </span>
                     ) : (
                       <span className="text-xs text-slate-500 dark:text-slate-400">
@@ -480,13 +448,11 @@ function ShipmentForm() {
                     Carrier prefixes
                   </p>
                   <p className="mt-2 text-xs leading-6 text-slate-600 dark:text-slate-300">
-                    MSC: MEDU, MSDU, MSNU, MSMU, MSCU
-                    <br />
-                    ONE: ONEY, BRDG
-                    <br />
-                    EVERGREEN: EGLV, EGSU, EGHU
-                    <br />
-                    PIL: SUB, PIL
+                    {carriers.map((carrier) => (
+                      <span key={carrier.code} className="block">
+                        {carrier.label}: {carrier.prefixes.join(', ')}
+                      </span>
+                    ))}
                   </p>
                 </div>
               </div>

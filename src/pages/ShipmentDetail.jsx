@@ -3,14 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { deleteDoc, doc, getDoc } from 'firebase/firestore'
 import { db } from '../../firebase'
 import useAuth from '../hooks/useAuth'
-
-const carrierBadgeStyles = {
-  MSC: 'bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-200',
-  ONE: 'bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-200',
-  EVERGREEN:
-    'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200',
-  PIL: 'bg-orange-100 text-orange-700 dark:bg-orange-500/15 dark:text-orange-200',
-}
+import { getCarrierBadgeClass, getCarrierLabel } from '../lib/carriers'
 
 const dateFormatter = new Intl.DateTimeFormat('en-US', {
   month: 'short',
@@ -104,13 +97,6 @@ function formatAmount(value) {
   return Number.isNaN(sanitizedValue) ? '—' : currencyFormatter.format(sanitizedValue)
 }
 
-function getCarrierBadgeClass(carrier) {
-  return (
-    carrierBadgeStyles[String(carrier).trim().toUpperCase()] ??
-    'bg-slate-100 text-slate-700 dark:bg-white/10 dark:text-slate-200'
-  )
-}
-
 function extractTimelineEvents(cacheData) {
   const rawEvents = Array.isArray(cacheData?.events)
     ? cacheData.events
@@ -157,6 +143,9 @@ function extractTimelineEvents(cacheData) {
         title,
         description: event?.description ?? event?.message ?? event?.details ?? '',
         location: event?.location ?? event?.port ?? event?.place ?? '',
+        container: event?.container ?? '',
+        estimated:
+          event?.estimated ?? Boolean(occurredAt && occurredAt.getTime() > Date.now()),
         occurredAt,
         sortValue: occurredAt ? occurredAt.getTime() : index,
       }
@@ -183,6 +172,8 @@ function ShipmentDetail() {
   const { currentUser } = useAuth()
   const [shipment, setShipment] = useState(null)
   const [timelineEvents, setTimelineEvents] = useState([])
+  const [trackingMeta, setTrackingMeta] = useState(null)
+  const [containerFilter, setContainerFilter] = useState('all')
   const [error, setError] = useState('')
   const [isLoading, setIsLoading] = useState(true)
   const [isDeleting, setIsDeleting] = useState(false)
@@ -223,24 +214,23 @@ function ShipmentDetail() {
           setShipment(shipmentRecord)
         }
 
-        const trackingKey = String(
-          shipmentData.blNo ?? shipmentData.blNumber ?? '',
-        ).trim()
-
-        if (!trackingKey) {
-          if (isMounted) {
-            setTimelineEvents([])
-          }
-          return
-        }
-
-        const trackingSnapshot = await getDoc(doc(db, 'tracking_cache', trackingKey))
+        // The tracking function writes tracking_cache/{shipmentId}.
+        const trackingSnapshot = await getDoc(
+          doc(db, 'tracking_cache', shipmentSnapshot.id),
+        )
+        const trackingData = trackingSnapshot.exists() ? trackingSnapshot.data() : null
 
         if (isMounted) {
-          setTimelineEvents(
-            trackingSnapshot.exists()
-              ? extractTimelineEvents(trackingSnapshot.data())
-              : [],
+          setTimelineEvents(extractTimelineEvents(trackingData))
+          setTrackingMeta(
+            trackingData
+              ? {
+                  status: trackingData.status ?? '',
+                  source: trackingData.source ?? '',
+                  checkedAt: trackingData.checkedAt ?? null,
+                  error: trackingData.error ?? '',
+                }
+              : null,
           )
         }
       } catch (loadError) {
@@ -254,6 +244,7 @@ function ShipmentDetail() {
           )
           setShipment(null)
           setTimelineEvents([])
+          setTrackingMeta(null)
         }
       } finally {
         if (isMounted) {
@@ -340,6 +331,15 @@ function ShipmentDetail() {
       ? [shipment.containerNumbers]
       : []
   const daysLeft = getDayDifference(shipment.eta)
+  const timelineContainers = Array.from(
+    new Set(timelineEvents.map((event) => event.container).filter(Boolean)),
+  ).sort()
+  const visibleEvents =
+    containerFilter === 'all'
+      ? timelineEvents
+      : timelineEvents.filter(
+          (event) => !event.container || event.container === containerFilter,
+        )
 
   return (
     <main className="mx-auto min-h-screen w-full max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
@@ -404,7 +404,7 @@ function ShipmentDetail() {
                   <span
                     className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${getCarrierBadgeClass(carrier)}`}
                   >
-                    {carrier}
+                    {getCarrierLabel(carrier)}
                   </span>
                 </div>
 
@@ -445,7 +445,7 @@ function ShipmentDetail() {
                   <span
                     className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${getCarrierBadgeClass(carrier)}`}
                   >
-                    {carrier}
+                    {getCarrierLabel(carrier)}
                   </span>
                 </DetailItem>
                 <DetailItem label="Consignee">{consigneeName}</DetailItem>
@@ -478,24 +478,56 @@ function ShipmentDetail() {
                     Tracking timeline
                   </p>
                   <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">
-                    Loaded from tracking_cache/{blNo}
+                    {trackingMeta?.checkedAt
+                      ? `Last checked ${formatDateTime(trackingMeta.checkedAt)}`
+                      : 'Not checked yet'}
                   </p>
                 </div>
                 <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 dark:border-white/10 dark:bg-slate-950/70 dark:text-slate-300">
-                  {timelineEvents.length} event{timelineEvents.length === 1 ? '' : 's'}
+                  {visibleEvents.length} event{visibleEvents.length === 1 ? '' : 's'}
                 </span>
               </div>
 
-              {timelineEvents.length === 0 ? (
+              {trackingMeta?.error ? (
+                <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
+                  Last live check failed: {trackingMeta.error}
+                </div>
+              ) : null}
+
+              {timelineContainers.length > 1 ? (
+                <label className="mt-4 flex flex-col gap-2 text-xs font-medium text-slate-600 dark:text-slate-300">
+                  Container
+                  <select
+                    value={containerFilter}
+                    onChange={(event) => setContainerFilter(event.target.value)}
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/10 dark:bg-slate-900 dark:text-white"
+                  >
+                    <option value="all">All containers</option>
+                    {timelineContainers.map((containerNo) => (
+                      <option key={containerNo} value={containerNo}>
+                        {containerNo}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+
+              {visibleEvents.length === 0 ? (
                 <div className="mt-6 rounded-3xl border border-dashed border-slate-200 bg-white/80 px-4 py-8 text-center text-sm text-slate-500 dark:border-white/10 dark:bg-slate-950/70 dark:text-slate-300">
-                  No cached tracking events found for this B/L number yet.
+                  No tracking events recorded for this shipment yet.
                 </div>
               ) : (
                 <ol className="mt-6 space-y-5">
-                  {timelineEvents.map((event, index) => (
+                  {visibleEvents.map((event, index) => (
                     <li key={event.id} className="relative pl-8">
-                      <span className="absolute left-0 top-1.5 flex h-3.5 w-3.5 rounded-full bg-sky-500 ring-4 ring-sky-100 dark:ring-sky-500/20" />
-                      {index < timelineEvents.length - 1 ? (
+                      <span
+                        className={`absolute left-0 top-1.5 flex h-3.5 w-3.5 rounded-full ${
+                          event.estimated
+                            ? 'border-2 border-sky-500 bg-white dark:bg-slate-950'
+                            : 'bg-sky-500'
+                        } ring-4 ring-sky-100 dark:ring-sky-500/20`}
+                      />
+                      {index < visibleEvents.length - 1 ? (
                         <span className="absolute top-5 left-[6px] h-[calc(100%+1rem)] w-px bg-slate-200 dark:bg-white/10" />
                       ) : null}
 
@@ -517,10 +549,24 @@ function ShipmentDetail() {
                           </p>
                         </div>
 
-                        {event.location ? (
-                          <p className="mt-3 text-xs font-medium tracking-[0.18em] text-slate-500 uppercase dark:text-slate-400">
-                            {event.location}
-                          </p>
+                        {event.location || event.container || event.estimated ? (
+                          <div className="mt-3 flex flex-wrap items-center gap-2">
+                            {event.location ? (
+                              <p className="text-xs font-medium tracking-[0.18em] text-slate-500 uppercase dark:text-slate-400">
+                                {event.location}
+                              </p>
+                            ) : null}
+                            {event.container ? (
+                              <span className="rounded-full border border-slate-200 px-2 py-0.5 text-[11px] font-medium text-slate-600 dark:border-white/10 dark:text-slate-300">
+                                {event.container}
+                              </span>
+                            ) : null}
+                            {event.estimated ? (
+                              <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-500/15 dark:text-amber-200">
+                                Planned
+                              </span>
+                            ) : null}
+                          </div>
                         ) : null}
                       </div>
                     </li>
