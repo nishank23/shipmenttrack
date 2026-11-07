@@ -153,6 +153,129 @@ function extractTimelineEvents(cacheData) {
     .sort((left, right) => left.sortValue - right.sortValue)
 }
 
+const RECENT_EVENT_COUNT = 4
+
+/**
+ * One foldable group per container (plus one for B/L-level events),
+ * ordered so the container with the most recent activity comes first.
+ */
+function groupTimelineEvents(events) {
+  const groups = new Map()
+
+  events.forEach((event) => {
+    const key = event.container || 'bl'
+
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        label: event.container || 'Shipment',
+        events: [],
+      })
+    }
+
+    groups.get(key).events.push(event)
+  })
+
+  return Array.from(groups.values())
+    .map((group) => {
+      const actualEvents = group.events.filter((event) => !event.estimated)
+      const latestEvent = actualEvents[actualEvents.length - 1] ?? null
+
+      return {
+        ...group,
+        latestEvent,
+        sortValue: latestEvent?.occurredAt ? latestEvent.occurredAt.getTime() : 0,
+      }
+    })
+    .sort((left, right) => right.sortValue - left.sortValue)
+}
+
+function TimelineGroup({ group, defaultOpen }) {
+  const [showAll, setShowAll] = useState(false)
+  const actualEvents = group.events.filter((event) => !event.estimated)
+  const plannedEvents = group.events.filter((event) => event.estimated)
+  const hiddenCount = Math.max(actualEvents.length - RECENT_EVENT_COUNT, 0)
+  const shownEvents = showAll
+    ? group.events
+    : [...actualEvents.slice(-RECENT_EVENT_COUNT), ...plannedEvents]
+
+  return (
+    <details
+      open={defaultOpen}
+      className="group rounded-2xl border border-slate-200/70 bg-white dark:border-white/10 dark:bg-slate-950/70"
+    >
+      <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
+        <span
+          aria-hidden="true"
+          className="text-xs text-slate-400 transition group-open:rotate-90"
+        >
+          ▶
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold text-slate-950 dark:text-white">
+            {group.label}
+          </p>
+          <p className="truncate text-xs text-slate-500 dark:text-slate-400">
+            {group.latestEvent
+              ? `${group.latestEvent.title} · ${formatDateTime(group.latestEvent.occurredAt)}`
+              : 'Planned moves only'}
+          </p>
+        </div>
+        <span className="shrink-0 rounded-full border border-slate-200 px-2 py-0.5 text-[11px] font-medium text-slate-600 dark:border-white/10 dark:text-slate-300">
+          {group.events.length}
+        </span>
+      </summary>
+
+      <div className="border-t border-slate-200/70 px-4 pt-3 pb-4 dark:border-white/10">
+        {hiddenCount > 0 ? (
+          <button
+            type="button"
+            onClick={() => setShowAll((current) => !current)}
+            className="mb-3 text-xs font-medium text-sky-600 hover:underline dark:text-sky-300"
+          >
+            {showAll
+              ? 'Show recent only'
+              : `Show ${hiddenCount} earlier event${hiddenCount === 1 ? '' : 's'}`}
+          </button>
+        ) : null}
+
+        <ol className="relative space-y-3 border-l border-slate-200 pl-4 dark:border-white/10">
+          {shownEvents.map((event) => (
+            <li key={event.id} className="relative">
+              <span
+                aria-hidden="true"
+                className={`absolute top-1.5 -left-[21px] h-2.5 w-2.5 rounded-full ${
+                  event.estimated
+                    ? 'border-2 border-sky-500 bg-white dark:bg-slate-950'
+                    : 'bg-sky-500'
+                }`}
+              />
+              <div className="flex items-start justify-between gap-3">
+                <p className="text-sm font-medium text-slate-900 dark:text-white">
+                  {event.title}
+                  {event.estimated ? (
+                    <span className="ml-2 rounded-full bg-amber-50 px-2 py-0.5 align-middle text-[11px] font-medium text-amber-700 dark:bg-amber-500/15 dark:text-amber-200">
+                      Planned
+                    </span>
+                  ) : null}
+                </p>
+                <p className="shrink-0 text-xs text-slate-500 dark:text-slate-400">
+                  {formatDateTime(event.occurredAt)}
+                </p>
+              </div>
+              {event.location || event.description ? (
+                <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                  {[event.location, event.description].filter(Boolean).join(' · ')}
+                </p>
+              ) : null}
+            </li>
+          ))}
+        </ol>
+      </div>
+    </details>
+  )
+}
+
 function DetailItem({ label, children }) {
   return (
     <div className="rounded-3xl border border-slate-200/70 bg-slate-50/80 p-5 dark:border-white/10 dark:bg-white/5">
@@ -173,7 +296,6 @@ function ShipmentDetail() {
   const [shipment, setShipment] = useState(null)
   const [timelineEvents, setTimelineEvents] = useState([])
   const [trackingMeta, setTrackingMeta] = useState(null)
-  const [containerFilter, setContainerFilter] = useState('all')
   const [error, setError] = useState('')
   const [isLoading, setIsLoading] = useState(true)
   const [isDeleting, setIsDeleting] = useState(false)
@@ -331,15 +453,7 @@ function ShipmentDetail() {
       ? [shipment.containerNumbers]
       : []
   const daysLeft = getDayDifference(shipment.eta)
-  const timelineContainers = Array.from(
-    new Set(timelineEvents.map((event) => event.container).filter(Boolean)),
-  ).sort()
-  const visibleEvents =
-    containerFilter === 'all'
-      ? timelineEvents
-      : timelineEvents.filter(
-          (event) => !event.container || event.container === containerFilter,
-        )
+  const timelineGroups = groupTimelineEvents(timelineEvents)
 
   return (
     <main className="mx-auto min-h-screen w-full max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
@@ -484,7 +598,7 @@ function ShipmentDetail() {
                   </p>
                 </div>
                 <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 dark:border-white/10 dark:bg-slate-950/70 dark:text-slate-300">
-                  {visibleEvents.length} event{visibleEvents.length === 1 ? '' : 's'}
+                  {timelineEvents.length} event{timelineEvents.length === 1 ? '' : 's'}
                 </span>
               </div>
 
@@ -494,84 +608,20 @@ function ShipmentDetail() {
                 </div>
               ) : null}
 
-              {timelineContainers.length > 1 ? (
-                <label className="mt-4 flex flex-col gap-2 text-xs font-medium text-slate-600 dark:text-slate-300">
-                  Container
-                  <select
-                    value={containerFilter}
-                    onChange={(event) => setContainerFilter(event.target.value)}
-                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 dark:border-white/10 dark:bg-slate-900 dark:text-white"
-                  >
-                    <option value="all">All containers</option>
-                    {timelineContainers.map((containerNo) => (
-                      <option key={containerNo} value={containerNo}>
-                        {containerNo}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ) : null}
-
-              {visibleEvents.length === 0 ? (
+              {timelineEvents.length === 0 ? (
                 <div className="mt-6 rounded-3xl border border-dashed border-slate-200 bg-white/80 px-4 py-8 text-center text-sm text-slate-500 dark:border-white/10 dark:bg-slate-950/70 dark:text-slate-300">
                   No tracking events recorded for this shipment yet.
                 </div>
               ) : (
-                <ol className="mt-6 space-y-5">
-                  {visibleEvents.map((event, index) => (
-                    <li key={event.id} className="relative pl-8">
-                      <span
-                        className={`absolute left-0 top-1.5 flex h-3.5 w-3.5 rounded-full ${
-                          event.estimated
-                            ? 'border-2 border-sky-500 bg-white dark:bg-slate-950'
-                            : 'bg-sky-500'
-                        } ring-4 ring-sky-100 dark:ring-sky-500/20`}
-                      />
-                      {index < visibleEvents.length - 1 ? (
-                        <span className="absolute top-5 left-[6px] h-[calc(100%+1rem)] w-px bg-slate-200 dark:bg-white/10" />
-                      ) : null}
-
-                      <div className="rounded-2xl border border-slate-200/70 bg-white p-4 dark:border-white/10 dark:bg-slate-950/70">
-                        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                          <div>
-                            <p className="text-sm font-semibold text-slate-950 dark:text-white">
-                              {event.title}
-                            </p>
-                            {event.description ? (
-                              <p className="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-300">
-                                {event.description}
-                              </p>
-                            ) : null}
-                          </div>
-
-                          <p className="text-xs text-slate-500 dark:text-slate-400">
-                            {formatDateTime(event.occurredAt)}
-                          </p>
-                        </div>
-
-                        {event.location || event.container || event.estimated ? (
-                          <div className="mt-3 flex flex-wrap items-center gap-2">
-                            {event.location ? (
-                              <p className="text-xs font-medium tracking-[0.18em] text-slate-500 uppercase dark:text-slate-400">
-                                {event.location}
-                              </p>
-                            ) : null}
-                            {event.container ? (
-                              <span className="rounded-full border border-slate-200 px-2 py-0.5 text-[11px] font-medium text-slate-600 dark:border-white/10 dark:text-slate-300">
-                                {event.container}
-                              </span>
-                            ) : null}
-                            {event.estimated ? (
-                              <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-500/15 dark:text-amber-200">
-                                Planned
-                              </span>
-                            ) : null}
-                          </div>
-                        ) : null}
-                      </div>
-                    </li>
+                <div className="mt-6 space-y-3">
+                  {timelineGroups.map((group, index) => (
+                    <TimelineGroup
+                      key={group.key}
+                      group={group}
+                      defaultOpen={index === 0}
+                    />
                   ))}
-                </ol>
+                </div>
               )}
             </section>
           </div>

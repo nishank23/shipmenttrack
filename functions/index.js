@@ -3,7 +3,7 @@ import { createTransport } from 'nodemailer'
 import { initializeApp, applicationDefault, cert }  from 'firebase-admin/app'
 import { getFirestore, Timestamp , FieldValue, Filter } from 'firebase-admin/firestore'
 import { info, error as _error, warn } from 'firebase-functions/logger'
-import { onRequest } from 'firebase-functions/v2/https'
+import { HttpsError, onCall, onRequest } from 'firebase-functions/v2/https'
 import { defineSecret } from 'firebase-functions/params'
 import { onSchedule } from 'firebase-functions/v2/scheduler'
 import puppeteer from 'puppeteer-core'
@@ -132,6 +132,125 @@ export const manualCheck = onRequest(
         ok: false,
         error: error.message || 'Shipment check failed.',
       })
+    }
+  },
+)
+
+/**
+ * Signed-in users look up live tracking for a B/L.
+ *
+ * - Without shipmentId: preview only (used while filling the add/edit form).
+ * - With shipmentId: also stores events on that shipment. ETA is never written
+ *   here, because the ETA is user-editable on the form; events are server-owned.
+ */
+export const lookupTracking = onCall(
+  {
+    timeoutSeconds: 120,
+    secrets: [LIGHTPANDA_WS_URL],
+  },
+  async (request) => {
+    const uid = request.auth?.uid
+
+    if (!uid) {
+      throw new HttpsError('unauthenticated', 'Sign in to look up tracking.')
+    }
+
+    const blNo = normalizeString(request.data?.blNo).toUpperCase().replace(/\s+/g, '')
+    const shipmentId = normalizeString(request.data?.shipmentId)
+
+    if (!/^[A-Z0-9-]{4,40}$/.test(blNo)) {
+      throw new HttpsError('invalid-argument', 'Enter a valid B/L number.')
+    }
+
+    const carrier =
+      detectCarrierFromBl(blNo) || normalizeString(request.data?.carrier).toUpperCase()
+
+    if (!LIVE_TRACKING_CARRIERS.has(carrier)) {
+      throw new HttpsError(
+        'failed-precondition',
+        'Live tracking is not available for this carrier.',
+      )
+    }
+
+    let shipmentRef = null
+
+    if (shipmentId) {
+      shipmentRef = db.collection('shipments').doc(shipmentId)
+      const shipmentSnapshot = await shipmentRef.get()
+
+      if (!shipmentSnapshot.exists || shipmentSnapshot.data()?.uid !== uid) {
+        throw new HttpsError('permission-denied', 'Shipment not found.')
+      }
+    }
+
+    let liveResult
+
+    try {
+      liveResult = await scrapeLiveTracking({ blNo, carrier })
+    } catch (error) {
+      warn(`Tracking lookup failed for ${blNo}`, error)
+
+      if (shipmentRef) {
+        await shipmentRef.set(
+          {
+            trackingStatus: 'error',
+            trackingError: error.message || 'Tracking failed',
+          },
+          { merge: true },
+        )
+      }
+
+      throw new HttpsError('unavailable', 'The carrier did not return tracking data. Try again later.')
+    }
+
+    const events = normalizeEvents(liveResult.events).slice(-MAX_STORED_EVENTS)
+    const latestEvent = getLatestEvent(events)
+    const eta = normalizeDate(liveResult.eta)
+
+    if (shipmentRef) {
+      await Promise.all([
+        db.collection('tracking_cache').doc(shipmentId).set(
+          {
+            shipmentId,
+            blNo,
+            carrier,
+            latestEta: eta ? Timestamp.fromDate(eta) : null,
+            checkedAt: Timestamp.now(),
+            expiresAt: Timestamp.fromMillis(Date.now() + CACHE_TTL_MS),
+            status: eta ? 'live' : 'fallback',
+            source: liveResult.source || carrier,
+            events,
+            eventCount: events.length,
+            error: null,
+          },
+          { merge: true },
+        ),
+        shipmentRef.set(
+          {
+            latestEvent: latestEvent || null,
+            eventCount: events.length,
+            trackingStatus: 'live',
+            trackingError: null,
+          },
+          { merge: true },
+        ),
+      ])
+    }
+
+    return {
+      carrier,
+      eta: eta ? eta.toISOString() : null,
+      eventCount: events.length,
+      latestEvent: latestEvent
+        ? {
+            title: latestEvent.title,
+            location: latestEvent.location,
+            container: latestEvent.container,
+            occurredAt: latestEvent.occurredAt
+              ? latestEvent.occurredAt.toDate().toISOString()
+              : null,
+          }
+        : null,
     }
   },
 )

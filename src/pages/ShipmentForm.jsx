@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   addDoc,
@@ -16,6 +16,7 @@ import {
   getCarrierBadgeClass,
   getCarrierLabel,
 } from '../lib/carriers'
+import { lookupTracking, supportsLiveTracking } from '../lib/tracking'
 
 const initialValues = {
   invoiceNo: '',
@@ -93,6 +94,19 @@ function validate(values) {
   return nextErrors
 }
 
+const lookupDateFormatter = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+})
+
+const idleLookup = { status: 'idle', blNo: '', eta: null, latestEvent: null, eventCount: 0, error: '' }
+
+function formatLookupDate(value) {
+  const date = normalizeDate(value)
+  return date ? lookupDateFormatter.format(date) : '—'
+}
+
 function ShipmentForm() {
   const { shipmentId } = useParams()
   const navigate = useNavigate()
@@ -102,10 +116,15 @@ function ShipmentForm() {
   const [formError, setFormError] = useState('')
   const [isLoadingShipment, setIsLoadingShipment] = useState(Boolean(shipmentId))
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [lookup, setLookup] = useState(idleLookup)
+  const etaTouchedRef = useRef(false)
+  const lookupRequestRef = useRef(0)
   const isEditing = Boolean(shipmentId)
 
   useEffect(() => {
     if (!shipmentId) {
+      etaTouchedRef.current = false
+      setLookup(idleLookup)
       setValues(initialValues)
       setErrors({})
       setFormError('')
@@ -142,6 +161,22 @@ function ShipmentForm() {
         if (!isMounted) {
           return
         }
+
+        // Existing shipment: its ETA was already chosen, never auto-replace it.
+        etaTouchedRef.current = true
+        setLookup({
+          status: shipment.latestEvent ? 'done' : 'idle',
+          blNo: String(shipment.blNo ?? shipment.blNumber ?? '').trim().toUpperCase(),
+          eta: normalizeDate(shipment.currentEta ?? shipment.eta),
+          latestEvent: shipment.latestEvent
+            ? {
+                ...shipment.latestEvent,
+                occurredAt: normalizeDate(shipment.latestEvent.occurredAt),
+              }
+            : null,
+          eventCount: shipment.eventCount ?? 0,
+          error: '',
+        })
 
         setValues({
           invoiceNo: shipment.invoiceNo ?? shipment.invoiceNumber ?? '',
@@ -189,6 +224,10 @@ function ShipmentForm() {
   const handleChange = (field) => (event) => {
     const nextValue = event.target.value
 
+    if (field === 'eta') {
+      etaTouchedRef.current = true
+    }
+
     setValues((currentValues) => ({
       ...currentValues,
       [field]: nextValue,
@@ -205,12 +244,94 @@ function ShipmentForm() {
     })
   }
 
+  const runLookup = async ({ force = false } = {}) => {
+    const blNo = values.blNo.trim().toUpperCase().replace(/\s+/g, '')
+    const carrier = detectCarrierFromBlNumber(blNo) || values.carrier
+
+    if (!blNo) {
+      setLookup(idleLookup)
+      return
+    }
+
+    if (!supportsLiveTracking(carrier)) {
+      setLookup({ ...idleLookup, status: 'unsupported', blNo })
+      return
+    }
+
+    if (!force && lookup.blNo === blNo && lookup.status !== 'error') {
+      return
+    }
+
+    const requestId = lookupRequestRef.current + 1
+    lookupRequestRef.current = requestId
+    setLookup({ ...idleLookup, status: 'loading', blNo })
+
+    try {
+      const result = await lookupTracking({ blNo, carrier })
+
+      if (lookupRequestRef.current !== requestId) {
+        return
+      }
+
+      const carrierEta = normalizeDate(result.eta)
+
+      setLookup({
+        status: 'done',
+        blNo,
+        eta: carrierEta,
+        latestEvent: result.latestEvent
+          ? { ...result.latestEvent, occurredAt: normalizeDate(result.latestEvent.occurredAt) }
+          : null,
+        eventCount: result.eventCount ?? 0,
+        error: '',
+      })
+
+      // Prefill ETA from the carrier unless the user already typed one.
+      if (carrierEta && !etaTouchedRef.current) {
+        setValues((currentValues) => ({
+          ...currentValues,
+          eta: formatDateInput(carrierEta),
+        }))
+        setErrors((currentErrors) => {
+          const nextErrors = { ...currentErrors }
+          delete nextErrors.eta
+          return nextErrors
+        })
+      }
+    } catch (lookupError) {
+      if (lookupRequestRef.current !== requestId) {
+        return
+      }
+
+      console.error('Tracking lookup failed.', lookupError)
+      setLookup({
+        ...idleLookup,
+        status: 'error',
+        blNo,
+        error: lookupError?.message || 'Tracking lookup failed.',
+      })
+    }
+  }
+
   const handleBlBlur = () => {
     const detectedCarrier = detectCarrierFromBlNumber(values.blNo)
 
     setValues((currentValues) => ({
       ...currentValues,
       carrier: detectedCarrier,
+    }))
+
+    runLookup()
+  }
+
+  const useCarrierEta = () => {
+    if (!lookup.eta) {
+      return
+    }
+
+    setValues((currentValues) => ({
+      ...currentValues,
+      eta: formatDateInput(lookup.eta),
     }))
   }
 
@@ -245,6 +366,8 @@ function ShipmentForm() {
       carrier: detectedCarrier || values.carrier || 'Unknown',
       containerNumbers,
       eta: createDateFromInput(values.eta),
+      // The ETA the user confirmed on the form is the current official ETA.
+      currentEta: createDateFromInput(values.eta),
       invAmount: values.invAmount === '' ? null : Number(values.invAmount),
       consigneeName: values.consigneeName.trim(),
       notes: values.notes.trim(),
@@ -252,12 +375,27 @@ function ShipmentForm() {
     }
 
     try {
+      let savedShipmentId = shipmentId
+
       if (isEditing) {
         await updateDoc(doc(db, 'shipments', shipmentId), shipmentPayload)
       } else {
-        await addDoc(collection(db, 'shipments'), {
+        const createdRef = await addDoc(collection(db, 'shipments'), {
           ...shipmentPayload,
           createdAt: serverTimestamp(),
+        })
+        savedShipmentId = createdRef.id
+      }
+
+      // Events are server-owned: ask the backend to store them on the shipment.
+      // Runs in the background; the dashboard updates live when it finishes.
+      if (supportsLiveTracking(shipmentPayload.carrier)) {
+        lookupTracking({
+          blNo: shipmentPayload.blNo,
+          carrier: shipmentPayload.carrier,
+          shipmentId: savedShipmentId,
+        }).catch((syncError) => {
+          console.error('Background tracking sync failed.', syncError)
         })
       }
 
@@ -387,7 +525,22 @@ function ShipmentForm() {
                       {errors.eta}
                     </span>
                   ) : null}
+                  {lookup.status === 'done' && lookup.eta ? (
+                    <span className="flex flex-wrap items-center gap-2 text-xs font-normal text-slate-500 dark:text-slate-400">
+                      Carrier ETA: {formatLookupDate(lookup.eta)}
+                      {values.eta !== formatDateInput(lookup.eta) ? (
+                        <button
+                          type="button"
+                          onClick={useCarrierEta}
+                          className="font-medium text-sky-600 underline-offset-2 hover:underline dark:text-sky-300"
+                        >
+                          Use carrier ETA
+                        </button>
+                      ) : null}
+                    </span>
+                  ) : null}
                 </label>
+
 
                 <label className="flex flex-col gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
                   INV Amount
@@ -416,6 +569,81 @@ function ShipmentForm() {
                   ) : null}
                 </label>
               </div>
+
+              <section
+                aria-live="polite"
+                className="rounded-3xl border border-slate-200/70 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/5"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-medium text-slate-900 dark:text-white">
+                    Live tracking
+                  </p>
+                  {lookup.status === 'done' || lookup.status === 'error' ? (
+                    <button
+                      type="button"
+                      onClick={() => runLookup({ force: true })}
+                      className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-white dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/10"
+                    >
+                      Refresh
+                    </button>
+                  ) : null}
+                </div>
+
+                {lookup.status === 'idle' ? (
+                  <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">
+                    Enter a B/L number to load the current event and ETA from the carrier.
+                  </p>
+                ) : null}
+                {lookup.status === 'unsupported' ? (
+                  <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">
+                    Live tracking is not available for this carrier. Enter the ETA manually.
+                  </p>
+                ) : null}
+                {lookup.status === 'loading' ? (
+                  <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">
+                    Checking {lookup.blNo} with the carrier…
+                  </p>
+                ) : null}
+                {lookup.status === 'error' ? (
+                  <p className="mt-2 text-xs leading-5 text-rose-600 dark:text-rose-200">
+                    {lookup.error} You can still enter the ETA manually.
+                  </p>
+                ) : null}
+                {lookup.status === 'done' ? (
+                  <dl className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <div className="rounded-2xl border border-slate-200/70 bg-white p-3 dark:border-white/10 dark:bg-slate-950/70">
+                      <dt className="text-xs tracking-[0.18em] text-slate-500 uppercase dark:text-slate-400">
+                        Current event · set by carrier
+                      </dt>
+                      <dd className="mt-1 text-sm font-semibold text-slate-950 dark:text-white">
+                        {lookup.latestEvent?.title ?? 'No events reported yet'}
+                      </dd>
+                      {lookup.latestEvent ? (
+                        <dd className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                          {[
+                            lookup.latestEvent.location,
+                            formatLookupDate(lookup.latestEvent.occurredAt),
+                            lookup.eventCount > 1 ? `${lookup.eventCount} events` : '',
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')}
+                        </dd>
+                      ) : null}
+                    </div>
+                    <div className="rounded-2xl border border-slate-200/70 bg-white p-3 dark:border-white/10 dark:bg-slate-950/70">
+                      <dt className="text-xs tracking-[0.18em] text-slate-500 uppercase dark:text-slate-400">
+                        Carrier ETA
+                      </dt>
+                      <dd className="mt-1 text-sm font-semibold text-slate-950 dark:text-white">
+                        {lookup.eta ? formatLookupDate(lookup.eta) : 'Not provided'}
+                      </dd>
+                      <dd className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                        You can change the ETA field above.
+                      </dd>
+                    </div>
+                  </dl>
+                ) : null}
+              </section>
 
               <label className="flex flex-col gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
                 Container numbers
