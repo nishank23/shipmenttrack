@@ -957,19 +957,28 @@ function normalizeEvents(events) {
   return (Array.isArray(events) ? events : [])
     .map((event, index) => {
       const occurredAt = normalizeDate(event?.occurredAt)
+      const title = normalizeString(event?.title || 'Status update')
 
       return {
         id: normalizeString(event?.id || `event-${index}`),
-        title: normalizeString(event?.title || 'Status update'),
+        title,
         description: normalizeString(event?.description || ''),
         location: normalizeString(event?.location || ''),
         container: normalizeString(event?.container || ''),
         occurredAt: occurredAt ? Timestamp.fromDate(occurredAt) : null,
-        // Carrier timelines mix actual and planned moves; future dates are planned.
-        estimated: Boolean(occurredAt && occurredAt.getTime() > Date.now()),
+        // Carrier timelines mix actual and planned moves. Future dates are planned,
+        // and so are forecast rows (e.g. MSC "Estimated Time of Arrival") even
+        // after their date has passed.
+        estimated:
+          isForecastEventTitle(title) ||
+          Boolean(occurredAt && occurredAt.getTime() > Date.now()),
       }
     })
     .filter((event) => event.title)
+}
+
+function isForecastEventTitle(title) {
+  return /\b(estimated|expected|planned|ETA|ETD)\b/i.test(title)
 }
 
 /**
