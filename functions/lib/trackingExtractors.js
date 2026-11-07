@@ -21,7 +21,6 @@ const carrierExtractors = {
   ONE: extractOneTracking,
   EVERGREEN: extractEvergreenTracking,
   PIL: extractPilTracking,
-  CMA_CGM: extractCmaCgmTracking,
 }
 
 export function extractTrackingPayload({ carrier, payload, blNo }) {
@@ -383,41 +382,6 @@ export function mergeTrackingResults(source, blNo, results) {
 }
 
 /* ------------------------------------------------------------------ */
-/* CMA CGM (rendered HTML from Lightpanda)                             */
-/* ------------------------------------------------------------------ */
-
-export function isCmaCgmBlockedPage(html) {
-  return /captcha-delivery|datadome|Access denied|Please enable JS/i.test(
-    String(html || ''),
-  )
-}
-
-function extractCmaCgmTracking(html, blNo) {
-  const $ = load(String(html || ''))
-  const bodyText = cleanText($('body').text())
-
-  /**
-   * CMA CGM shows the arrival as e.g.
-   * "ETA Berth at POD Sunday 03-MAY-2026 12:00"
-   * or "Estimated Time of Arrival 03-May-2026".
-   */
-  const etaMatch = bodyText.match(
-    /(?:ETA[^0-9]{0,40}|Estimated Time of Arrival[^0-9]{0,20})(\d{1,2}[-\s][A-Za-z]{3}[-\s]\d{4}(?:\s+\d{1,2}:\d{2})?)/i,
-  )
-
-  const eta = etaMatch
-    ? parseDateCandidate(etaMatch[1])
-    : extractEtaFromHtml($)
-
-  const events = [
-    ...extractEventsFromHtml($, 'cma'),
-    ...extractTimelineListEvents($, 'cma'),
-  ]
-
-  return buildResult('CMA_CGM', blNo, eta, events)
-}
-
-/* ------------------------------------------------------------------ */
 /* Generic object / HTML helpers                                       */
 /* ------------------------------------------------------------------ */
 
@@ -605,40 +569,6 @@ function extractEventsFromHtml($, idPrefix = 'html') {
         description: nonDateCells.slice(1, -1).join(' · '),
         location: nonDateCells.length > 1 ? nonDateCells[nonDateCells.length - 1] : '',
         container,
-        occurredAt,
-      }),
-    )
-  })
-
-  return events
-}
-
-/**
- * Timeline-style markup (<li> items) used by newer carrier portals.
- */
-function extractTimelineListEvents($, idPrefix = 'timeline') {
-  const events = []
-
-  $('[class*="timeline"] li, [class*="Timeline"] li').each((index, item) => {
-    const text = cleanText($(item).text())
-    const occurredAt = parseDateCandidate(text)
-
-    if (!occurredAt) {
-      return
-    }
-
-    const lines = $(item)
-      .find('*')
-      .map((_, el) => cleanText($(el).clone().children().remove().end().text()))
-      .get()
-      .filter((line) => line && !parseDateCandidate(line))
-
-    events.push(
-      buildEvent({
-        id: `${idPrefix}-li-${index}`,
-        title: lines[0] || text.slice(0, 80),
-        description: lines.slice(2).join(' · '),
-        location: lines[1] || '',
         occurredAt,
       }),
     )

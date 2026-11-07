@@ -100,7 +100,7 @@ const lookupDateFormatter = new Intl.DateTimeFormat('en-US', {
   year: 'numeric',
 })
 
-const idleLookup = { status: 'idle', blNo: '', eta: null, latestEvent: null, eventCount: 0, error: '' }
+const idleLookup = { status: 'idle', blNo: '', carrier: '', eta: null, latestEvent: null, eventCount: 0, error: '' }
 
 function formatLookupDate(value) {
   const date = normalizeDate(value)
@@ -244,9 +244,9 @@ function ShipmentForm() {
     })
   }
 
-  const runLookup = async ({ force = false } = {}) => {
+  const runLookup = async ({ force = false, carrier: carrierOverride } = {}) => {
     const blNo = values.blNo.trim().toUpperCase().replace(/\s+/g, '')
-    const carrier = detectCarrierFromBlNumber(blNo) || values.carrier
+    const carrier = detectCarrierFromBlNumber(blNo) || carrierOverride || values.carrier
 
     if (!blNo) {
       setLookup(idleLookup)
@@ -258,13 +258,18 @@ function ShipmentForm() {
       return
     }
 
-    if (!force && lookup.blNo === blNo && lookup.status !== 'error') {
+    if (
+      !force &&
+      lookup.blNo === blNo &&
+      lookup.carrier === carrier &&
+      lookup.status !== 'error'
+    ) {
       return
     }
 
     const requestId = lookupRequestRef.current + 1
     lookupRequestRef.current = requestId
-    setLookup({ ...idleLookup, status: 'loading', blNo })
+    setLookup({ ...idleLookup, status: 'loading', blNo, carrier })
 
     try {
       const result = await lookupTracking({ blNo, carrier })
@@ -278,6 +283,7 @@ function ShipmentForm() {
       setLookup({
         status: 'done',
         blNo,
+        carrier,
         eta: carrierEta,
         latestEvent: result.latestEvent
           ? { ...result.latestEvent, occurredAt: normalizeDate(result.latestEvent.occurredAt) }
@@ -308,6 +314,7 @@ function ShipmentForm() {
         ...idleLookup,
         status: 'error',
         blNo,
+        carrier,
         error: lookupError?.message || 'Tracking lookup failed.',
       })
     }
@@ -316,12 +323,29 @@ function ShipmentForm() {
   const handleBlBlur = () => {
     const detectedCarrier = detectCarrierFromBlNumber(values.blNo)
 
-    setValues((currentValues) => ({
-      ...currentValues,
-      carrier: detectedCarrier,
-    }))
+    // Keep a manually chosen carrier when the B/L has no known prefix
+    // (booking refs without a carrier prefix).
+    if (detectedCarrier) {
+      setValues((currentValues) => ({
+        ...currentValues,
+        carrier: detectedCarrier,
+      }))
+    }
 
     runLookup()
+  }
+
+  const handleCarrierSelect = (event) => {
+    const carrier = event.target.value
+
+    setValues((currentValues) => ({
+      ...currentValues,
+      carrier,
+    }))
+
+    if (carrier) {
+      runLookup({ force: true, carrier })
+    }
   }
 
   const useCarrierEta = () => {
@@ -488,12 +512,26 @@ function ShipmentForm() {
                     required
                   />
                   <div className="flex min-h-6 items-center gap-2">
-                    {values.carrier ? (
+                    {detectCarrierFromBlNumber(values.blNo) ? (
                       <span
                         className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${getCarrierBadgeClass(values.carrier)}`}
                       >
                         {getCarrierLabel(values.carrier)}
                       </span>
+                    ) : values.blNo.trim() ? (
+                      <select
+                        aria-label="Carrier"
+                        value={values.carrier}
+                        onChange={handleCarrierSelect}
+                        className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-normal text-slate-900 dark:border-white/10 dark:bg-slate-900 dark:text-white"
+                      >
+                        <option value="">Select carrier…</option>
+                        {carriers.map((carrier) => (
+                          <option key={carrier.code} value={carrier.code}>
+                            {carrier.label}
+                          </option>
+                        ))}
+                      </select>
                     ) : (
                       <span className="text-xs text-slate-500 dark:text-slate-400">
                         Carrier auto-detect runs when you leave this field.

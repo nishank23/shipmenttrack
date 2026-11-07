@@ -12,6 +12,7 @@ import {
 import { db } from '../../firebase'
 import useAuth from '../hooks/useAuth'
 import { getCarrierBadgeClass, getCarrierLabel } from '../lib/carriers'
+import { setShipmentArchived } from '../lib/tracking'
 
 const statusOptions = [
   { value: 'all', label: 'All statuses' },
@@ -243,6 +244,28 @@ function Dashboard() {
     }
   }
 
+  const handleArchive = async (shipmentId) => {
+    const confirmed = window.confirm(
+      'Move this shipment to the archive? You can restore it later.',
+    )
+
+    if (!confirmed) {
+      return
+    }
+
+    setError('')
+    setDeletingId(shipmentId)
+
+    try {
+      await setShipmentArchived(shipmentId, true)
+    } catch (archiveError) {
+      console.error('Failed to archive shipment.', archiveError)
+      setError('Shipment could not be archived. Please try again.')
+    } finally {
+      setDeletingId('')
+    }
+  }
+
   const handleDelete = async (shipmentId) => {
     const confirmed = window.confirm('Delete this shipment? This action cannot be undone.')
 
@@ -344,6 +367,13 @@ function Dashboard() {
                 </p>
               </div>
             </div>
+
+            <Link
+              to="/archive"
+              className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:text-slate-100 dark:hover:bg-white/10"
+            >
+              Archive
+            </Link>
 
             <Link
               to="/profile"
@@ -540,6 +570,14 @@ function Dashboard() {
                             >
                               Edit
                             </Link>
+                            <button
+                              type="button"
+                              onClick={() => handleArchive(shipment.id)}
+                              disabled={deletingId === shipment.id}
+                              className="inline-flex items-center rounded-xl border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-70 dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/5"
+                            >
+                              Archive
+                            </button>
                             <button
                               type="button"
                               onClick={() => handleDelete(shipment.id)}

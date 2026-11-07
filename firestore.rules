@@ -7,16 +7,20 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    // Active or archived: tracking data stays readable after archiving.
     function ownsShipment(shipmentId) {
-      let shipment = get(/databases/$(database)/documents/shipments/$(shipmentId));
-      return shipment != null && shipment.data.uid == request.auth.uid;
+      let activePath = /databases/$(database)/documents/shipments/$(shipmentId);
+      let archivedPath = /databases/$(database)/documents/archived_shipments/$(shipmentId);
+      return (exists(activePath) && get(activePath).data.uid == request.auth.uid)
+        || (exists(archivedPath) && get(archivedPath).data.uid == request.auth.uid);
     }
 
     // Written only by Cloud Functions (Admin SDK bypasses these rules).
     // Users can edit the ETA, but never the carrier-reported tracking events.
     function serverOwnedShipmentFields() {
       return ['latestEvent', 'eventCount', 'trackingStatus', 'trackingError',
-              'etaSource', 'etaVerified', 'etaChangeCount', 'lastEtaSyncAt'];
+              'etaSource', 'etaVerified', 'etaChangeCount', 'lastEtaSyncAt',
+              'autoArchiveDisabled', 'restoredAt'];
     }
 
     match /users/{uid} {
@@ -35,6 +39,13 @@ service cloud.firestore {
         && request.resource.data.uid == request.auth.uid
         && !request.resource.data.diff(resource.data).affectedKeys()
               .hasAny(serverOwnedShipmentFields());
+    }
+
+    // Moved here by Cloud Functions (auto when the empty container is
+    // returned, or via the setShipmentArchived callable). Read-only for users.
+    match /archived_shipments/{shipmentId} {
+      allow read, delete: if signedIn() && resource.data.uid == request.auth.uid;
+      allow create, update: if false;
     }
 
     // Tracking cache and ETA history are server-written, readable by the owner.

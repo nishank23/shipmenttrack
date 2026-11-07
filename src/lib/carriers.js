@@ -26,12 +26,6 @@ export const carriers = [
     prefixes: ['SUB', 'PIL'],
     badge: 'bg-orange-100 text-orange-700 dark:bg-orange-500/15 dark:text-orange-200',
   },
-  {
-    code: 'CMA_CGM',
-    label: 'CMA CGM',
-    prefixes: ['CMDU', 'CMAU', 'CGMU'],
-    badge: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-200',
-  },
 ]
 
 const defaultBadge = 'bg-slate-100 text-slate-700 dark:bg-white/10 dark:text-slate-200'

@@ -4,6 +4,7 @@ import { deleteDoc, doc, getDoc } from 'firebase/firestore'
 import { db } from '../../firebase'
 import useAuth from '../hooks/useAuth'
 import { getCarrierBadgeClass, getCarrierLabel } from '../lib/carriers'
+import { describeArchiveReason, setShipmentArchived } from '../lib/tracking'
 
 const dateFormatter = new Intl.DateTimeFormat('en-US', {
   month: 'short',
@@ -299,6 +300,8 @@ function ShipmentDetail() {
   const [error, setError] = useState('')
   const [isLoading, setIsLoading] = useState(true)
   const [isDeleting, setIsDeleting] = useState(false)
+  const [isArchiving, setIsArchiving] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
 
   useEffect(() => {
     if (!shipmentId || !currentUser?.uid) {
@@ -313,8 +316,14 @@ function ShipmentDetail() {
       setError('')
 
       try {
-        const shipmentRef = doc(db, 'shipments', shipmentId)
-        const shipmentSnapshot = await getDoc(shipmentRef)
+        let shipmentSnapshot = await getDoc(doc(db, 'shipments', shipmentId))
+        let isArchived = false
+
+        // Not active: it may have been moved to the archive.
+        if (!shipmentSnapshot.exists()) {
+          shipmentSnapshot = await getDoc(doc(db, 'archived_shipments', shipmentId))
+          isArchived = true
+        }
 
         if (!shipmentSnapshot.exists()) {
           throw new Error('Shipment not found.')
@@ -330,6 +339,7 @@ function ShipmentDetail() {
         const shipmentRecord = {
           id: shipmentSnapshot.id,
           ...shipmentData,
+          isArchived,
         }
 
         if (isMounted) {
@@ -380,7 +390,39 @@ function ShipmentDetail() {
     return () => {
       isMounted = false
     }
-  }, [currentUser?.uid, navigate, shipmentId])
+  }, [currentUser?.uid, navigate, shipmentId, reloadKey])
+
+  const handleArchiveToggle = async () => {
+    if (!shipment?.id) {
+      return
+    }
+
+    const archiving = !shipment.isArchived
+
+    if (
+      archiving &&
+      !window.confirm('Move this shipment to the archive? You can restore it later.')
+    ) {
+      return
+    }
+
+    setError('')
+    setIsArchiving(true)
+
+    try {
+      await setShipmentArchived(shipment.id, archiving)
+      setReloadKey((current) => current + 1)
+    } catch (archiveError) {
+      console.error('Failed to update archive state.', archiveError)
+      setError(
+        archiving
+          ? 'Shipment could not be archived. Please try again.'
+          : 'Shipment could not be restored. Please try again.',
+      )
+    } finally {
+      setIsArchiving(false)
+    }
+  }
 
   const handleDelete = async () => {
     if (!shipment?.id) {
@@ -399,8 +441,10 @@ function ShipmentDetail() {
     setIsDeleting(true)
 
     try {
-      await deleteDoc(doc(db, 'shipments', shipment.id))
-      navigate('/dashboard', { replace: true })
+      await deleteDoc(
+        doc(db, shipment.isArchived ? 'archived_shipments' : 'shipments', shipment.id),
+      )
+      navigate(shipment.isArchived ? '/archive' : '/dashboard', { replace: true })
     } catch (deleteError) {
       console.error('Failed to delete shipment.', deleteError)
       setError('Shipment could not be deleted. Please try again.')
@@ -478,12 +522,22 @@ function ShipmentDetail() {
             >
               Back to dashboard
             </Link>
-            <Link
-              to={`/edit/${shipment.id}`}
-              className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:text-slate-100 dark:hover:bg-white/10"
+            {shipment.isArchived ? null : (
+              <Link
+                to={`/edit/${shipment.id}`}
+                className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:text-slate-100 dark:hover:bg-white/10"
+              >
+                Edit
+              </Link>
+            )}
+            <button
+              type="button"
+              onClick={handleArchiveToggle}
+              disabled={isArchiving}
+              className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-70 dark:border-white/10 dark:bg-white/5 dark:text-slate-100 dark:hover:bg-white/10"
             >
-              Edit
-            </Link>
+              {isArchiving ? 'Working...' : shipment.isArchived ? 'Restore' : 'Archive'}
+            </button>
             <button
               type="button"
               onClick={handleDelete}
@@ -494,6 +548,14 @@ function ShipmentDetail() {
             </button>
           </div>
         </div>
+
+        {shipment.isArchived ? (
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 dark:border-white/10 dark:bg-white/5 dark:text-slate-200">
+            Archived {formatEta(shipment.archivedAt)} ·{' '}
+            {describeArchiveReason(shipment.archiveReason)}. Restore it to edit or
+            track it again.
+          </div>
+        ) : null}
 
         {error ? (
           <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-100">

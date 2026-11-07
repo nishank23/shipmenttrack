@@ -4,7 +4,7 @@ A multi-carrier shipment tracking platform that collects, parses, normalizes, an
 
 ## What it does
 
-* 🚢 Tracks shipments across **MSC, ONE, Evergreen, PIL, and CMA CGM**
+* 🚢 Tracks shipments across **MSC, ONE, Evergreen, and PIL**
 * 🧭 Stores normalized per-container tracking events and shows them as a timeline
 * 🔍 Collects data from carrier APIs and web responses
 * 🧩 Parses **JSON and HTML** responses
@@ -45,7 +45,6 @@ MSC       → JSON
 ONE       → JSON + Events
 Evergreen → HTML
 PIL       → JSON → HTML parsing
-CMA CGM   → Lightpanda (headless browser) → HTML parsing
 ```
 
 The data is then normalized into a common structure containing shipment details, ETA, events, location, and timestamps.

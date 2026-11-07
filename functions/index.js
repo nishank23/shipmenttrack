@@ -6,12 +6,10 @@ import { info, error as _error, warn } from 'firebase-functions/logger'
 import { HttpsError, onCall, onRequest } from 'firebase-functions/v2/https'
 import { defineSecret } from 'firebase-functions/params'
 import { onSchedule } from 'firebase-functions/v2/scheduler'
-import puppeteer from 'puppeteer-core'
 import {
   extractTrackingPayload,
   extractPilContainers,
   extractPilContainerTracking,
-  isCmaCgmBlockedPage,
   mergeTrackingResults,
 } from './lib/trackingExtractors.js'
 
@@ -21,13 +19,7 @@ initializeApp();
 const db = getFirestore();
 const SMTP_EMAIL = defineSecret('SMTP_EMAIL')
 const SMTP_PASSWORD = defineSecret('SMTP_PASSWORD')
-/**
- * Lightpanda CDP endpoint, e.g.
- *   wss://cloud.lightpanda.io/ws?token=<TOKEN>   (Lightpanda cloud)
- *   ws://<host>:9222                              (self-hosted `lightpanda serve`)
- */
-const LIGHTPANDA_WS_URL = defineSecret('LIGHTPANDA_WS_URL')
-const TRACKING_SECRETS = [SMTP_EMAIL, SMTP_PASSWORD, LIGHTPANDA_WS_URL]
+const TRACKING_SECRETS = [SMTP_EMAIL, SMTP_PASSWORD]
 const MAX_STORED_EVENTS = 200
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000
@@ -40,7 +32,6 @@ const carrierPrefixMap = [
   { carrier: 'ONE', prefixes: ['ONEY', 'BRDG'] },
   { carrier: 'EVERGREEN', prefixes: ['EGLV', 'EGSU', 'EGHU'] },
   { carrier: 'PIL', prefixes: ['SUB', 'PIL'] },
-  { carrier: 'CMA_CGM', prefixes: ['CMDU', 'CMAU', 'CGMU'] },
 ]
 
 const LIVE_TRACKING_CARRIERS = new Set(carrierPrefixMap.map((entry) => entry.carrier))
@@ -146,7 +137,6 @@ export const manualCheck = onRequest(
 export const lookupTracking = onCall(
   {
     timeoutSeconds: 120,
-    secrets: [LIGHTPANDA_WS_URL],
   },
   async (request) => {
     const uid = request.auth?.uid
@@ -237,9 +227,25 @@ export const lookupTracking = onCall(
       ])
     }
 
+    const importComplete = isImportComplete(events)
+    let archived = false
+
+    if (shipmentRef && importComplete) {
+      const shipmentData = (await shipmentRef.get()).data() || {}
+
+      if (!shipmentData.autoArchiveDisabled) {
+        archived = await moveShipmentToArchive(shipmentId, {
+          reason: 'empty-returned',
+          archivedBy: 'system',
+        })
+      }
+    }
+
     return {
       carrier,
       eta: eta ? eta.toISOString() : null,
+      importComplete,
+      archived,
       eventCount: events.length,
       latestEvent: latestEvent
         ? {
@@ -254,6 +260,118 @@ export const lookupTracking = onCall(
     }
   },
 )
+
+/**
+ * Manually archive or restore one of the caller's shipments.
+ * Archived shipments live in archived_shipments/{sameId}; tracking_cache/{id}
+ * is kept so the timeline stays available.
+ */
+export const setShipmentArchived = onCall(async (request) => {
+  const uid = request.auth?.uid
+
+  if (!uid) {
+    throw new HttpsError('unauthenticated', 'Sign in to manage shipments.')
+  }
+
+  const shipmentId = normalizeString(request.data?.shipmentId)
+  const archived = request.data?.archived === true
+
+  if (!shipmentId) {
+    throw new HttpsError('invalid-argument', 'shipmentId is required.')
+  }
+
+  const moved = archived
+    ? await moveShipmentToArchive(shipmentId, { reason: 'manual', archivedBy: uid, uid })
+    : await restoreShipmentFromArchive(shipmentId, { uid })
+
+  if (!moved) {
+    throw new HttpsError('not-found', 'Shipment not found.')
+  }
+
+  return { shipmentId, archived }
+})
+
+const EMPTY_RETURN_PATTERN = /\bempty\b.*\b(received|returned|return)\b/i
+
+/**
+ * Import is finished when every container's most recent actual event is an
+ * empty-container return (e.g. MSC "Empty received at CY").
+ */
+function isImportComplete(events) {
+  const actualEvents = (Array.isArray(events) ? events : []).filter(
+    (event) => event?.occurredAt && !event.estimated,
+  )
+
+  if (actualEvents.length === 0) {
+    return false
+  }
+
+  const latestByContainer = new Map()
+
+  actualEvents.forEach((event) => {
+    latestByContainer.set(event.container || 'bl', event)
+  })
+
+  // Ignore B/L-level rows when container-level events exist.
+  if (latestByContainer.size > 1) {
+    latestByContainer.delete('bl')
+  }
+
+  return Array.from(latestByContainer.values()).every((event) =>
+    EMPTY_RETURN_PATTERN.test(event.title),
+  )
+}
+
+/**
+ * Atomically moves shipments/{id} to archived_shipments/{id}.
+ * Pass uid to require ownership. Resolves false when there is nothing to move.
+ */
+async function moveShipmentToArchive(shipmentId, { reason, archivedBy, uid }) {
+  const shipmentRef = db.collection('shipments').doc(shipmentId)
+  const archiveRef = db.collection('archived_shipments').doc(shipmentId)
+
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(shipmentRef)
+
+    if (!snapshot.exists || (uid && snapshot.data()?.uid !== uid)) {
+      return false
+    }
+
+    transaction.set(archiveRef, {
+      ...snapshot.data(),
+      archivedAt: FieldValue.serverTimestamp(),
+      archiveReason: reason,
+      archivedBy,
+    })
+    transaction.delete(shipmentRef)
+    return true
+  })
+}
+
+async function restoreShipmentFromArchive(shipmentId, { uid }) {
+  const shipmentRef = db.collection('shipments').doc(shipmentId)
+  const archiveRef = db.collection('archived_shipments').doc(shipmentId)
+
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(archiveRef)
+
+    if (!snapshot.exists || snapshot.data()?.uid !== uid) {
+      return false
+    }
+
+    // eslint-disable-next-line no-unused-vars
+    const { archivedAt, archiveReason, archivedBy, ...shipmentData } = snapshot.data()
+
+    transaction.set(shipmentRef, {
+      ...shipmentData,
+      // The user brought it back on purpose: don't auto-archive it again.
+      autoArchiveDisabled: true,
+      restoredAt: FieldValue.serverTimestamp(),
+    })
+    transaction.delete(archiveRef)
+    return true
+  })
+}
 
 async function runShipmentCheck({ uid = '', forceRefresh = true, sendEmails = true }) {
   const users = await getUserDocs(uid)
@@ -447,6 +565,11 @@ async function processUserShipments(userDoc, { forceRefresh, sendEmails, transpo
 
     allProcessedShipments.push(shipment)
 
+    // Import finished (empty container returned): no more alerts.
+    if (shipment.archived) {
+      continue
+    }
+
     /**
      * PRIORITY 1:
      * ETA changed email
@@ -551,6 +674,7 @@ async function processUserShipments(userDoc, { forceRefresh, sendEmails, transpo
         : null,
       etaChanged: shipment.etaChanged || false,
       etaSource: shipment.etaSource,
+      archived: shipment.archived,
       daysRemaining: shipment.daysRemaining,
     })),
   }
@@ -606,9 +730,22 @@ async function buildShipmentAlertRecord(shipmentDoc, { forceRefresh }) {
   }
 
   const eta = tracking.eta || firestoreEta
+  let archived = false
+
+  if (tracking.importComplete && !shipment.autoArchiveDisabled) {
+    try {
+      archived = await moveShipmentToArchive(shipmentDoc.id, {
+        reason: 'empty-returned',
+        archivedBy: 'system',
+      })
+    } catch (archiveError) {
+      warn(`Auto-archive failed for ${blNo}`, archiveError)
+    }
+  }
 
   return {
     id: shipmentDoc.id,
+    archived,
 
     invoiceNo: normalizeString(
       shipment.invoiceNo ||
@@ -787,6 +924,7 @@ async function resolveTrackingInfo({ shipmentId, blNo, carrier, firestoreEta, fo
       etaSource: liveResult.eta ? 'live' : 'firestore',
       etaChanged,
       previousEta,
+      importComplete: isImportComplete(events),
     }
   } catch (error) {
     warn(`Tracking scrape failed for ${blNo}`, error)
@@ -853,8 +991,6 @@ async function scrapeLiveTracking({ blNo, carrier }) {
       return scrapeEvergreen(blNo)
     case 'PIL':
       return scrapePil(blNo)
-    case 'CMA_CGM':
-      return scrapeCmaCgm(blNo)
     default:
       return {
         source: 'firestore',
@@ -1028,50 +1164,6 @@ async function scrapePil(blNo) {
   return mergeTrackingResults('PIL', blNo, results)
 }
 
-/**
- * CMA CGM renders tracking client-side, so we load the page in Lightpanda
- * (a lightweight CDP-compatible headless browser) and parse the resulting DOM.
- */
-async function scrapeCmaCgm(blNo) {
-  const endpoint = normalizeString(LIGHTPANDA_WS_URL.value())
-
-  if (!endpoint) {
-    throw new Error('LIGHTPANDA_WS_URL secret is not configured.')
-  }
-
-  const url = new URL('https://www.cma-cgm.com/ebusiness/tracking/search')
-  url.searchParams.set('SearchBy', 'BL')
-  url.searchParams.set('Reference', normalizeString(blNo).toUpperCase())
-  url.searchParams.set('search', 'Search')
-
-  const browser = await puppeteer.connect({ browserWSEndpoint: endpoint })
-
-  try {
-    const context = await browser.createBrowserContext()
-    const page = await context.newPage()
-
-    await page.goto(url.toString(), {
-      waitUntil: 'networkidle0',
-      timeout: 45000,
-    })
-
-    const html = await page.content()
-    await page.close()
-    await context.close()
-
-    if (isCmaCgmBlockedPage(html)) {
-      throw new Error('CMA CGM blocked the automated request (bot protection).')
-    }
-
-    return extractTrackingPayload({
-      carrier: 'CMA_CGM',
-      payload: html,
-      blNo,
-    })
-  } finally {
-    await browser.disconnect()
-  }
-}
 function normalizeEvents(events) {
   return (Array.isArray(events) ? events : [])
     .map((event, index) => {
