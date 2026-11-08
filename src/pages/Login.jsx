@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Link, Navigate } from 'react-router-dom'
 import { Icon } from '@iconify/react'
-import EtaUpdateDemo from '../components/EtaUpdateDemo'
 import useAuth from '../hooks/useAuth'
 import { detectCarrierFromBlNumber, getCarrierLabel } from '../lib/carriers'
+import containerPhoto from '../assets/amber-cargo.webp'
 import '../landing.css'
 
 const PENDING_BL_KEY = 'shiptrack:pendingBl'
@@ -77,6 +77,52 @@ function AuthButton({ type, variant, pending, disabled, onClick, children }) {
   )
 }
 
+/**
+ * Opening move: the words settle, the photo strip opens from its centre and
+ * the picture keeps a slow drift. GSAP loads on demand; without it, or under
+ * reduced motion, the page is already in its final state.
+ */
+function useEntrance(scope) {
+  useLayoutEffect(() => {
+    const root = scope.current
+    if (!root || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return undefined
+
+    let ctx
+    let cancelled = false
+
+    import('gsap')
+      .then(({ default: gsap }) => {
+        if (cancelled) return
+        ctx = gsap.context(() => {
+          gsap
+            .timeline({ defaults: { ease: 'expo.out' } })
+            .from('[data-word]', { yPercent: 40, opacity: 0, duration: 1.1, stagger: 0.08 })
+            .from('.lp-strip', { clipPath: 'inset(0 50% 0 50% round 0.12em)', duration: 1.4, ease: 'expo.inOut' }, 0.05)
+            .from('.lp-strip img', { scale: 1.35, duration: 2.2 }, 0.05)
+            .from('.lp-form, .lp-alt, .lp-lead, .lp-top > *', { y: 16, opacity: 0, duration: 0.9, stagger: 0.07 }, 0.6)
+
+          // A slow drift keeps the one picture alive without pulling focus.
+          gsap.to('.lp-strip img', {
+            xPercent: -4,
+            duration: 14,
+            ease: 'sine.inOut',
+            repeat: -1,
+            yoyo: true,
+            delay: 2.2,
+          })
+        }, root)
+      })
+      .catch(() => {
+        // Motion is optional; the page is complete without it.
+      })
+
+    return () => {
+      cancelled = true
+      ctx?.revert()
+    }
+  }, [scope])
+}
+
 function getSignInMessage(error) {
   switch (error?.code) {
     case 'auth/popup-closed-by-user':
@@ -98,12 +144,15 @@ function Login() {
   const [fieldError, setFieldError] = useState('')
   const [authError, setAuthError] = useState('')
   const inputRef = useRef(null)
+  const pageRef = useRef(null)
   const signingInRef = useRef(false)
   const cleanBl = cleanBillOfLading(billOfLading)
   const carrier = detectCarrierFromBlNumber(cleanBl)
   const busy = Boolean(action) || loading
   const disabled = busy || Boolean(configError)
   const hasIdentifier = /[A-Z0-9]/.test(cleanBl)
+
+  useEntrance(pageRef)
 
   async function startSignIn(nextAction) {
     if (signingInRef.current || disabled) return
@@ -138,94 +187,111 @@ function Login() {
     return <SignedInRedirect requestedBl={requestedBl} />
   }
 
-  const fieldHint = carrier ? `${getCarrierLabel(carrier)} detected`
-    : hasIdentifier ? 'Choose a carrier after signing in.'
-      : 'Optional for Google sign-in.'
+  const fieldHint = carrier
+    ? `${getCarrierLabel(carrier)} bill of lading. Sign in to load its containers and ETA.`
+    : hasIdentifier
+      ? 'Prefix not recognised. You can pick the carrier after signing in.'
+      : 'MSC, ONE, Evergreen and PIL bills of lading.'
 
   return (
-    <main className="lp">
+    <main ref={pageRef} className="lp">
       <header className="lp-top">
         <Link to="/" className="lp-word">
           <ShipTrackMark />
           ShipTrack
         </Link>
-        <a className="lp-source" href="https://github.com/nishank23/shipmenttrack">Source on GitHub</a>
+        <a className="lp-source" href="https://github.com/nishank23/shipmenttrack">
+          Source on GitHub
+        </a>
       </header>
 
-      <div className="lp-shell">
-        <section className="lp-entry" aria-labelledby="lp-title">
-          <h1 id="lp-title">Track shipment ETAs.</h1>
-          <p className="lp-intro">Follow carrier ETAs and get an email when they change.</p>
+      <section className="lp-stage" aria-labelledby="lp-title">
+        <h1 id="lp-title" className="lp-sentence" aria-label="Know when your container lands.">
+          <span data-word aria-hidden="true">Know when</span>
+          <span className="lp-strip" aria-hidden="true">
+            <img src={containerPhoto} alt="" width="690" height="920" decoding="async" fetchPriority="high" />
+          </span>
+          <span data-word aria-hidden="true">lands.</span>
+        </h1>
 
-          <form
-            className="lp-card"
-            onSubmit={(event) => {
-              event.preventDefault()
-              void startSignIn('track')
+        <form
+          className="lp-form"
+          onSubmit={(event) => {
+            event.preventDefault()
+            void startSignIn('track')
+          }}
+          noValidate
+        >
+          <label className="lp-label" htmlFor="lp-bl">
+            Bill of lading number
+          </label>
+          <div className="lp-row" data-invalid={Boolean(fieldError) || undefined}>
+            <input
+              ref={inputRef}
+              id="lp-bl"
+              name="bl"
+              type="text"
+              value={billOfLading}
+              onChange={(event) => {
+                setBillOfLading(event.target.value)
+                setFieldError('')
+              }}
+              placeholder="e.g. MEDUKU648102"
+              maxLength={40}
+              autoComplete="off"
+              autoCapitalize="characters"
+              spellCheck={false}
+              readOnly={busy}
+              aria-invalid={Boolean(fieldError)}
+              aria-describedby="lp-bl-feedback"
+            />
+            <AuthButton type="submit" variant="track" pending={action === 'track'} disabled={disabled}>
+              Track this B/L
+              <Icon icon="solar:arrow-right-linear" width="18" height="18" aria-hidden="true" />
+            </AuthButton>
+          </div>
+          <p id="lp-bl-feedback" className="lp-feedback" aria-live="polite">
+            {fieldError ? (
+              <span className="lp-inline-error">{fieldError}</span>
+            ) : (
+              <>
+                {carrier ? <Icon icon="solar:check-circle-bold" width="16" height="16" aria-hidden="true" /> : null}
+                {fieldHint}
+              </>
+            )}
+          </p>
+        </form>
+
+        <div className="lp-alt">
+          <AuthButton
+            type="button"
+            variant="google"
+            pending={action === 'google' || (!action && loading)}
+            disabled={disabled}
+            onClick={() => {
+              void startSignIn('google')
             }}
-            noValidate
           >
-            <div className="lp-field" data-invalid={Boolean(fieldError) || undefined}>
-              <input
-                ref={inputRef}
-                id="lp-bl"
-                name="bl"
-                type="text"
-                value={billOfLading}
-                onChange={(event) => {
-                  setBillOfLading(event.target.value)
-                  setFieldError('')
-                }}
-                placeholder=" "
-                maxLength={40}
-                autoComplete="off"
-                autoCapitalize="characters"
-                spellCheck={false}
-                readOnly={busy}
-                aria-invalid={Boolean(fieldError)}
-                aria-describedby="lp-bl-feedback"
-              />
-              <label htmlFor="lp-bl">Bill of lading number</label>
-            </div>
-
-            <p id="lp-bl-feedback" className="lp-field-feedback" aria-live="polite">
-              {fieldError ? <span className="lp-inline-error">{fieldError}</span> : fieldHint}
+            <GoogleMark />
+            Continue with Google
+          </AuthButton>
+          {authError || configError ? (
+            <p className="lp-inline-error" role="alert">
+              {authError || 'Sign-in is temporarily unavailable.'}
             </p>
+          ) : (
+            <p className="lp-alt-note">Already tracking? Same Google account.</p>
+          )}
+        </div>
+        <p className="sr-only" role="status">
+          {action ? 'Connecting to Google.' : loading ? 'Checking your session.' : ''}
+        </p>
+      </section>
 
-            <div className="lp-actions">
-              <AuthButton type="submit" variant="track" pending={action === 'track'} disabled={disabled}>
-                Track this B/L
-                <Icon icon="solar:arrow-right-linear" width="18" height="18" aria-hidden="true" />
-              </AuthButton>
-              <AuthButton
-                type="button"
-                variant="google"
-                pending={action === 'google' || (!action && loading)}
-                disabled={disabled}
-                onClick={() => { void startSignIn('google') }}
-              >
-                <GoogleMark />
-                Continue with Google
-              </AuthButton>
-            </div>
-
-            <div className="lp-auth-note">
-              {authError || configError ? (
-                <p className="lp-inline-error" role="alert">
-                  {authError || 'Sign-in is temporarily unavailable.'}
-                </p>
-              ) : (
-                <p className="lp-auth-help">One Google account for new and returning users.</p>
-              )}
-            </div>
-            <p className="sr-only" role="status">
-              {action ? 'Connecting to Google.' : loading ? 'Checking your session.' : ''}
-            </p>
-          </form>
-        </section>
-
-        <EtaUpdateDemo />
-      </div>
+      <p className="lp-lead">
+        ShipTrack reads the carrier&apos;s events for every container on your bill of lading and emails
+        you the morning its ETA moves.
+      </p>
     </main>
   )
 }
