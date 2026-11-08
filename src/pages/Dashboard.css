@@ -183,13 +183,10 @@
 
 .dash-row:hover,
 .dash-row[data-expanded='true'] { background: var(--st-inset); }
-.dash-row[data-expanded='true']::before {
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 1px;
-  background: var(--st-accent);
-  pointer-events: none;
-  content: '';
+/* A pseudo-element on a <tr> becomes an extra table cell and shifts every
+   column, so the accent edge lives on the first cell instead. */
+.dash-row[data-expanded='true'] > :first-child {
+  box-shadow: inset 2px 0 0 var(--st-accent);
 }
 
 .dash-row__title,
@@ -226,27 +223,46 @@
 
 .dash-row__toggle::after { position: absolute; inset: 0; content: ''; }
 .dash-row__toggle:focus-visible { outline-offset: -4px; }
+.dash-row__toggle svg { transition: rotate 320ms cubic-bezier(0.16, 1, 0.3, 1); }
 .dash-row__toggle[aria-expanded='true'] svg { rotate: 180deg; }
+.dash-row { transition: background-color 180ms ease; }
+.dash-row__arrived { display: block; color: var(--lane-arrived, #1f8a5b); font-weight: 700; }
 
 .dash-table .dash-list-message { padding-block: 16px; font-size: 14px; }
 .dash-list-message .st-secondary { margin-top: 8px; padding-inline: 10px; font-size: 13px; }
 .dash-table .dash-detail-row > td { padding: 0; background: var(--st-field); }
 
 .dash-details {
+  overflow: hidden;
+  border-inline-start: 2px solid var(--st-accent);
+}
+
+/* Facts on the left, actions in their own column on the right. */
+.dash-details__inner {
   display: grid;
-  gap: 14px;
-  padding: 16px var(--dash-pad);
-  border-inline-start: 1px solid var(--st-accent);
+  grid-template-columns: minmax(0, 1fr) minmax(12rem, auto);
+  align-items: start;
+  gap: 18px 32px;
+  padding: 18px var(--dash-pad) 20px;
 }
 
 .dash-details__facts {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr) minmax(0, 0.8fr);
-  gap: 12px 20px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px 24px;
+}
+
+.dash-details__event {
+  grid-column: 1 / -1;
 }
 
 .dash-details__facts dt { color: var(--st-muted); font-size: 12px; }
 .dash-details__facts dd { margin-top: 3px; overflow-wrap: anywhere; font-weight: 640; }
+.dash-details__facts .dash-details__event-title {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
 .dash-details__facts .dash-help { font-weight: 500; }
 .dash-details__reference { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; }
 
@@ -266,8 +282,25 @@
 .dash-copy:hover,
 .dash-details__open:hover { text-decoration: underline; }
 
-.dash-details__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.dash-details__open { margin-inline-end: auto; }
+.dash-details__actions {
+  display: grid;
+  justify-items: stretch;
+  gap: 10px;
+}
+
+.dash-details__tools { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.dash-details__open {
+  justify-content: center;
+  min-height: 40px;
+  padding-inline: 14px;
+  border-radius: var(--st-radius);
+  background: var(--st-accent);
+  color: var(--st-accent-ink);
+  transition: background-color 180ms ease;
+}
+
+.dash-details__open:hover { background: var(--st-accent-hover); text-decoration: none; }
 .dash-details__actions .st-secondary {
   gap: 5px;
   min-height: 36px;
@@ -280,6 +313,21 @@
 .dash-details__actions .st-secondary:disabled { opacity: 0.65; cursor: wait; }
 .dash-details__actions .dash-details__delete { color: var(--st-danger); }
 .dash-details__actions .dash-details__delete:hover { background: var(--st-danger-wash); }
+
+@media (max-width: 64rem) {
+  .dash-details__inner { grid-template-columns: minmax(0, 1fr); }
+  .dash-details__facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dash-details__actions { grid-template-columns: auto minmax(0, 1fr); align-items: center; }
+}
+
+@media (prefers-color-scheme: dark) {
+  .dash-row__arrived { color: #4ade80; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dash-row__toggle svg,
+  .dash-row { transition: none; }
+}
 
 @media (max-width: 51rem) {
   .dash-table .dash-col-bl { display: none; }
@@ -317,9 +365,9 @@
   .dash-table .dash-col-carrier,
   .dash-table .dash-col-event { display: none; }
   .dash-row__mobile-event { display: block; white-space: normal; overflow-wrap: anywhere; }
-  .dash-details__facts { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px 12px; }
-  .dash-details__facts > :nth-child(2) { grid-row: 2; grid-column: 1 / -1; }
-  .dash-details__open { flex-basis: 100%; }
+  .dash-details__inner { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .dash-details__actions { grid-template-columns: minmax(0, 1fr); }
+  .dash-details__facts { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
   .dash-quick input,
   .dash-search input,
   .dash-filters select,

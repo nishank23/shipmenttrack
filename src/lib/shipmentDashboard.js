@@ -3,7 +3,23 @@ import { getCarrierLabel } from './carriers.js'
 const dayMs = 86400000
 const calendarDay = (date) => Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / dayMs
 
-export function getShipmentEta(eta, now) {
+// Carrier wording for "the box is at its destination". Transshipment
+// discharges happen mid-voyage, so they never count.
+const arrivalEvent = /\b(?:import discharged|discharged from vessel|discharged at (?:pod|destination)|unloaded from vessel at (?:pod|destination)|vessel arrival at (?:pod|destination)|arrived at (?:pod|destination)|delivered|import gate out|empty (?:received|returned))\b/i
+
+export function isArrivalEvent(event) {
+  return Boolean(event?.title && !event.estimated && !/transship/i.test(event.title) && arrivalEvent.test(event.title))
+}
+
+/**
+ * ETA window for a shipment. Once the carrier reports the box discharged at
+ * its destination, the shipment is 'arrived', whatever the old ETA said
+ * (carriers usually drop the ETA at that point).
+ */
+export function getShipmentEta(eta, now, latestEvent = null) {
+  if (isArrivalEvent(latestEvent)) {
+    return { daysLeft: null, bucket: 'arrived', arrivedAt: latestEvent.occurredAt ?? null }
+  }
   const daysLeft = eta ? calendarDay(eta) - calendarDay(now) : null
   const bucket = daysLeft === null ? 'missing'
     : daysLeft < 0 ? 'overdue' : daysLeft <= 7 ? 'week' : daysLeft <= 14 ? 'fortnight' : 'later'
@@ -16,7 +32,7 @@ export function getManifestSelection(shipments, selectedId) {
 
 export function getNextShipment(shipments) {
   return shipments.reduce((next, shipment) =>
-    shipment.eta && shipment.daysLeft >= 0 && (!next || shipment.eta < next.eta)
+    shipment.eta && typeof shipment.daysLeft === 'number' && shipment.daysLeft >= 0 && (!next || shipment.eta < next.eta)
       ? shipment : next, null)
 }
 

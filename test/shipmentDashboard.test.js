@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { getManifestSelection, getNextShipment, getShipmentEta, selectShipments } from '../src/lib/shipmentDashboard.js'
+import { getManifestSelection, getNextShipment, getShipmentEta, isArrivalEvent, selectShipments } from '../src/lib/shipmentDashboard.js'
 
 const now = new Date(2026, 3, 15, 12)
 const arrival = (offset, hour = 12) => new Date(2026, 3, 15 + offset, hour)
@@ -46,4 +46,14 @@ test('the register searches actual event wording and does not hide records by in
   assert.deepEqual(ids({ carrier: 'all', window: 'all', search: '', sort: 'earliest' }), ['10', '2', '4', '3'])
   assert.deepEqual(ids({ carrier: 'all', window: 'missing', search: '' }), ['3'])
   assert.deepEqual(ids({ carrier: 'all', window: 'later', search: '' }), ['4'])
+})
+
+test('a destination discharge marks the shipment arrived even after its ETA has passed', () => {
+  const discharged = { title: 'Import Discharged from Vessel', location: 'MAPUTO, MZ', occurredAt: arrival(-1) }
+  assert.deepEqual(getShipmentEta(arrival(-3), now, discharged), { daysLeft: null, bucket: 'arrived', arrivedAt: arrival(-1) })
+  assert.equal(isArrivalEvent({ title: 'Full Transshipment Discharged' }), false)
+  assert.equal(isArrivalEvent({ title: 'Empty received at CY' }), true)
+  assert.equal(isArrivalEvent({ title: 'Delivered', estimated: true }), false)
+  assert.equal(getShipmentEta(arrival(-3), now, { title: 'Full Transshipment Loaded' }).bucket, 'overdue')
+  assert.equal(getNextShipment([{ ...row('9', arrival(2)), ...getShipmentEta(arrival(2), now, discharged), eta: arrival(2) }]), null)
 })
