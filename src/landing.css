@@ -1,8 +1,8 @@
 /*
  * ShipTrack sign-in.
- * Thesis: the product doing its job. A real voyage (MEDUKU648102:
- * Surabaya, Port Elizabeth, Maputo) is traced on a WebGL globe while the
- * event card beside it reads out each carrier event, ending on the ETA.
+ * Thesis: the product doing its job. Popular container lanes are sailed
+ * one by one on a WebGL globe while the card beside it reads out each stop,
+ * ending on the typical transit time.
  * Brand tokens (--st-*) and Albert Sans; the globe stage is always navy.
  */
 .lp {
@@ -84,11 +84,12 @@
 .lp-copy {
   align-self: center;
   inline-size: min(100%, 540px);
-  padding-block: 32px;
+  padding-block: clamp(12px, 3vh, 32px);
 }
 
+/* Sized by width and height, so the page fits one screen on short laptops too. */
 .lp-copy h1 {
-  font-size: clamp(44px, 5.2vw, 84px);
+  font-size: clamp(38px, min(5.2vw, 8.4vh), 84px);
   font-weight: 700;
   letter-spacing: -0.045em;
   line-height: 0.98;
@@ -104,9 +105,9 @@
   display: inline-block;
 }
 
-.lp-sub {
+.lp .lp-sub {
   max-inline-size: 42ch;
-  margin-block-start: 28px;
+  margin-block-start: clamp(14px, 3vh, 28px);
   color: var(--lp-ink);
   font-size: 18px;
   line-height: 1.5;
@@ -115,12 +116,14 @@
 .lp-form {
   display: grid;
   gap: 8px;
-  margin-block-start: 32px;
+  max-inline-size: 460px;
+  margin-block-start: clamp(16px, 3.6vh, 32px);
 }
 
 .lp-label {
-  color: var(--lp-muted);
+  color: var(--lp-ink);
   font-size: 15px;
+  font-weight: 600;
 }
 
 .lp-row {
@@ -165,7 +168,7 @@
   text-transform: none;
 }
 
-.lp-feedback {
+.lp .lp-feedback {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -217,16 +220,19 @@
   background-color: var(--st-accent-hover);
 }
 
+/* The second path has the same width and weight as the first, only quieter in colour. */
 .lp-button--google {
-  min-block-size: 44px;
-  padding-inline: 12px;
-  margin-inline-start: -12px;
-  background-color: transparent;
+  inline-size: 100%;
+  min-block-size: 52px;
+  border: 1px solid var(--st-field-border);
+  border-radius: 12px;
+  background-color: var(--st-surface);
   color: var(--lp-ink);
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .lp-button--google:enabled:hover {
+  border-color: var(--lp-ink);
   background-color: var(--st-inset);
 }
 
@@ -294,15 +300,37 @@
   animation: lp-spin 750ms linear infinite;
 }
 
-.lp-alt {
-  display: grid;
-  justify-items: start;
-  gap: 4px;
-  margin-block-start: 10px;
+.lp .lp-or {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-inline-size: 460px;
+  margin-block: clamp(10px, 2vh, 18px) clamp(8px, 1.8vh, 16px);
+  color: var(--lp-muted);
+  font-size: 14px;
 }
 
-.lp-carriers {
-  margin-block-start: 28px;
+.lp-or::before,
+.lp-or::after {
+  flex: 1;
+  block-size: 1px;
+  background-color: var(--st-hairline);
+  content: '';
+}
+
+.lp-alt {
+  display: grid;
+  gap: 8px;
+  max-inline-size: 460px;
+}
+
+.lp .lp-alt-note {
+  color: var(--lp-muted);
+  font-size: 14px;
+}
+
+.lp .lp-carriers {
+  margin-block-start: clamp(12px, 3vh, 28px);
   color: var(--lp-muted);
   font-size: 15px;
 }
@@ -316,7 +344,6 @@
 
 .lp-stage {
   position: relative;
-  min-block-size: 100dvh;
   overflow: hidden;
   background-color: var(--stage-bg);
   color: var(--stage-ink);
@@ -339,14 +366,23 @@
   inset-inline-start: 0;
   padding: 0 0 0 12px;
   margin-block-start: -9px;
-  color: var(--stage-ink);
+  color: var(--stage-muted);
   font-size: 13px;
   font-weight: 600;
   line-height: 18px;
   white-space: nowrap;
   pointer-events: none;
-  transition: opacity 300ms ease;
+  opacity: 0;
+  transition: opacity 300ms ease, color 400ms ease;
   will-change: transform;
+}
+
+.voyage-globe-label[data-reached='true'] {
+  color: var(--stage-ink);
+}
+
+.voyage-globe-label[data-destination] {
+  color: #ffc56b;
 }
 
 /* Static stand-in when WebGL or motion is unavailable: the same land data, flat. */
@@ -377,6 +413,55 @@
   font-size: 13px;
 }
 
+.lp-voyage-head {
+  align-items: center;
+}
+
+.lp-voyage-lane {
+  color: var(--stage-ink);
+  font-size: 15px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lp-voyage-badge {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background-color: rgba(139, 185, 255, 0.14);
+  color: var(--stage-accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.lp .lp-voyage-sub {
+  margin-block-start: 4px;
+  color: var(--stage-muted);
+  font-size: 13px;
+}
+
+.lp-voyage-lanes {
+  display: flex;
+  gap: 6px;
+  margin-block-start: 16px;
+  padding: 0;
+  list-style: none;
+}
+
+.lp-voyage-lanes li {
+  flex: 1;
+  block-size: 3px;
+  border-radius: 3px;
+  background-color: rgba(139, 185, 255, 0.18);
+  transition: background-color 400ms ease;
+}
+
+.lp-voyage-lanes li[aria-current='true'] {
+  background-color: var(--stage-accent);
+}
+
 .lp-voyage-event {
   margin-block-start: 12px;
   animation: lp-event-in 600ms var(--lp-ease) both;
@@ -391,7 +476,7 @@
   white-space: nowrap;
 }
 
-.lp-voyage-meta {
+.lp .lp-voyage-meta {
   margin-block-start: 2px;
   color: var(--stage-muted);
   font-size: 14px;
@@ -478,6 +563,19 @@
   to {
     opacity: 1;
     transform: none;
+  }
+}
+
+/* Desktop: exactly one screen. Very short windows fall back to scrolling. */
+@media (min-width: 901px) and (min-height: 560px) {
+  .lp {
+    block-size: 100dvh;
+    overflow: hidden;
+  }
+
+  .lp-panel {
+    min-block-size: 0;
+    overflow: hidden;
   }
 }
 

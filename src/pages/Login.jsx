@@ -3,23 +3,14 @@ import { Link, Navigate } from 'react-router-dom'
 import { Icon } from '@iconify/react'
 import useAuth from '../hooks/useAuth'
 import VoyageGlobe from '../components/VoyageGlobe'
+import { TRADE_LANES, buildLane } from '../lib/tradeLanes'
 import { detectCarrierFromBlNumber, getCarrierLabel } from '../lib/carriers'
 import { gsap, prefersReducedMotion, useSmoothScroll } from '../lib/scrollMotion'
 import '../landing.css'
 
-// One real voyage ShipTrack recorded: B/L MEDUKU648102 (MSC, invoice 547-GVCS).
-const STOPS = [
-  { name: 'Surabaya', lat: -7.2, lon: 112.73 },
-  { name: 'Port Elizabeth', lat: -33.86, lon: 25.65 },
-  { name: 'Maputo', lat: -25.97, lon: 32.57 },
-]
-const GLOBE_FOCUS = { lat: -24, lon: 66 }
-const EVENTS = [
-  { title: 'Export loaded on vessel', place: 'Surabaya, Indonesia', date: 'Aug 29' },
-  { title: 'Transshipment discharged', place: 'Port Elizabeth, South Africa', date: 'Oct 14' },
-  { title: 'Transshipment loaded', place: 'Port Elizabeth, South Africa', date: 'Nov 2' },
-  { title: 'Arrives at Maputo', place: 'Maputo, Mozambique', date: 'ETA Nov 13' },
-]
+// The voyage cycle: each lane's named stops as arc-length fractions, so the
+// timeline can sail the vessel stop by stop.
+const LANE_STOPS = TRADE_LANES.map((lane) => buildLane(lane).stopFractions)
 
 const PENDING_BL_KEY = 'shiptrack:pendingBl'
 
@@ -97,14 +88,14 @@ function AuthButton({ type, variant, pending, disabled, onClick, children }) {
  * the globe fades in and the voyage plays on a loop that drives both the
  * route on the globe (progress) and the event card (step).
  */
-function useVoyage(scope, progress, setStep) {
+function useVoyage(scope, voyage, setPosition) {
   useLayoutEffect(() => {
     const root = scope.current
     if (!root) return undefined
 
     if (prefersReducedMotion()) {
-      gsap.set(progress, { value: 1 })
-      setStep(EVENTS.length - 1)
+      gsap.set(voyage, { lane: 0, progress: 1 })
+      setPosition({ lane: 0, step: TRADE_LANES[0].events.length - 1 })
       return undefined
     }
 
@@ -112,25 +103,30 @@ function useVoyage(scope, progress, setStep) {
       gsap
         .timeline({ defaults: { ease: 'expo.out' } })
         .from('[data-word]', { yPercent: 110, duration: 1.1, stagger: 0.06 })
-        .from('.lp-sub, .lp-form, .lp-alt, .lp-carriers', { y: 18, opacity: 0, duration: 0.9, stagger: 0.07 }, 0.35)
+        .from('.lp-sub, .lp-form, .lp-or, .lp-alt, .lp-carriers', { y: 18, opacity: 0, duration: 0.9, stagger: 0.07 }, 0.35)
         .from('.lp-stage', { opacity: 0, duration: 1.4, ease: 'power2.out' }, 0.1)
         .from('.lp-voyage', { y: 28, opacity: 0, duration: 1 }, 0.9)
 
-      gsap
-        .timeline({ repeat: -1, delay: 1, defaults: { ease: 'power2.inOut' } })
-        .call(() => setStep(0))
-        .set(progress, { value: 0 })
-        .to(progress, { value: 0.5, duration: 4.4 })
-        .call(() => setStep(1))
-        .to({}, { duration: 1.3 })
-        .call(() => setStep(2))
-        .to(progress, { value: 1, duration: 2.6 })
-        .call(() => setStep(3))
-        .to({}, { duration: 3.2 })
+      // Sail each lane stop by stop; legs take time in proportion to distance.
+      const cycle = gsap.timeline({ repeat: -1, delay: 1, defaults: { ease: 'power1.inOut' } })
+      TRADE_LANES.forEach((lane, laneIndex) => {
+        const fractions = LANE_STOPS[laneIndex]
+        cycle
+          .call(() => setPosition({ lane: laneIndex, step: 0 }))
+          .set(voyage, { lane: laneIndex, progress: 0 })
+          .to({}, { duration: 1.1 })
+        fractions.slice(1).forEach((fraction, index) => {
+          const previous = fractions[index]
+          cycle
+            .to(voyage, { progress: fraction, duration: Math.max(1.4, (fraction - previous) * 7) })
+            .call(() => setPosition({ lane: laneIndex, step: index + 1 }))
+            .to({}, { duration: index + 2 === fractions.length ? 2.4 : 0.9 })
+        })
+      })
     }, root)
 
     return () => ctx.revert()
-  }, [scope, progress, setStep])
+  }, [scope, voyage, setPosition])
 }
 
 function getSignInMessage(error) {
@@ -156,8 +152,8 @@ function Login() {
   const inputRef = useRef(null)
   const pageRef = useRef(null)
   // A stable mutable object: GSAP writes it, the globe's render loop reads it.
-  const [progress] = useState(() => ({ value: 0 }))
-  const [step, setStep] = useState(0)
+  const [voyage] = useState(() => ({ lane: 0, progress: 0 }))
+  const [position, setPosition] = useState({ lane: 0, step: 0 })
   const signingInRef = useRef(false)
   const cleanBl = cleanBillOfLading(billOfLading)
   const carrier = detectCarrierFromBlNumber(cleanBl)
@@ -166,7 +162,7 @@ function Login() {
   const hasIdentifier = /[A-Z0-9]/.test(cleanBl)
 
   useSmoothScroll()
-  useVoyage(pageRef, progress, setStep)
+  useVoyage(pageRef, voyage, setPosition)
 
   async function startSignIn(nextAction) {
     if (signingInRef.current || disabled) return
@@ -205,9 +201,10 @@ function Login() {
     ? `${getCarrierLabel(carrier)} bill of lading. Sign in to load its containers and ETA.`
     : hasIdentifier
       ? 'Prefix not recognised. You can pick the carrier after signing in.'
-      : 'Paste one to start, or sign in to see your shipments.'
-  const event = EVENTS[step]
-  const stopIndex = step === 0 ? 0 : step < 3 ? 1 : 2
+      : 'ShipTrack reads the carrier from the B/L prefix.'
+  const lane = TRADE_LANES[position.lane]
+  const event = lane.events[position.step]
+  const laneStops = lane.waypoints.filter((point) => point.name)
 
   return (
     <main ref={pageRef} className="lp">
@@ -245,7 +242,7 @@ function Login() {
             noValidate
           >
             <label className="lp-label" htmlFor="lp-bl">
-              Bill of lading number
+              Track a new bill of lading
             </label>
             <div className="lp-row" data-invalid={Boolean(fieldError) || undefined}>
               <input
@@ -258,7 +255,7 @@ function Login() {
                   setBillOfLading(changeEvent.target.value)
                   setFieldError('')
                 }}
-                placeholder="e.g. MEDUKU648102"
+                placeholder="e.g. MEDU1234567"
                 maxLength={40}
                 autoComplete="off"
                 autoCapitalize="characters"
@@ -284,6 +281,10 @@ function Login() {
             </p>
           </form>
 
+          <p className="lp-or" aria-hidden="true">
+            <span>or</span>
+          </p>
+
           <div className="lp-alt">
             <AuthButton
               type="button"
@@ -301,7 +302,9 @@ function Login() {
               <p className="lp-inline-error" role="alert">
                 {authError || 'Sign-in is temporarily unavailable.'}
               </p>
-            ) : null}
+            ) : (
+              <p className="lp-alt-note">Already tracking shipments? Sign in to open your dashboard.</p>
+            )}
           </div>
 
           <p className="lp-carriers">Reads MSC, ONE, Evergreen and PIL bills of lading.</p>
@@ -315,26 +318,34 @@ function Login() {
         </p>
       </section>
 
-      <section className="lp-stage" aria-label="Example voyage on a globe">
-        <VoyageGlobe stops={STOPS} focus={GLOBE_FOCUS} progress={progress} className="lp-globe">
+      <section className="lp-stage" aria-label="Trade lanes on a globe">
+        <VoyageGlobe lanes={TRADE_LANES} voyage={voyage} className="lp-globe">
           <div className="lp-globe-fallback" aria-hidden="true" />
         </VoyageGlobe>
 
         <article className="lp-voyage" data-ui aria-live="off">
           <header className="lp-voyage-head">
-            <span>MEDUKU648102 · MSC</span>
-            <span>Example voyage</span>
+            <span className="lp-voyage-lane">{lane.title}</span>
+            <span className="lp-voyage-badge">
+              {lane.badge}
+            </span>
           </header>
-          <div className="lp-voyage-event" key={step}>
+          <p className="lp-voyage-sub">{lane.subtitle}</p>
+          <div className="lp-voyage-event" key={`${position.lane}-${position.step}`}>
             <p className="lp-voyage-title">{event.title}</p>
-            <p className="lp-voyage-meta">
-              {event.place} · {event.date}
-            </p>
+            <p className="lp-voyage-meta">{event.place}</p>
           </div>
-          <ol className="lp-voyage-stops">
-            {STOPS.map((stop, index) => (
-              <li key={stop.name} className={index <= stopIndex ? 'is-reached' : undefined}>
+          <ol className="lp-voyage-stops" key={lane.id}>
+            {laneStops.map((stop, index) => (
+              <li key={stop.name} className={index <= position.step ? 'is-reached' : undefined}>
                 {stop.name}
+              </li>
+            ))}
+          </ol>
+          <ol className="lp-voyage-lanes" aria-label="Trade lanes">
+            {TRADE_LANES.map((entry, index) => (
+              <li key={entry.id} aria-current={index === position.lane ? 'true' : undefined}>
+                <span className="sr-only">{entry.title}</span>
               </li>
             ))}
           </ol>
