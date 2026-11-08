@@ -1,46 +1,42 @@
-import { useEffect } from 'react'
-import gsap from 'gsap'
-import { ScrollTrigger } from 'gsap/ScrollTrigger'
-import Lenis from 'lenis'
+export const standardSpring = { type: 'spring', stiffness: 320, damping: 28 }
 
-gsap.registerPlugin(ScrollTrigger)
+export const layoutTransition = { layout: standardSpring }
 
-export { gsap, ScrollTrigger }
-
-export function prefersReducedMotion() {
-  return (
-    typeof window !== 'undefined' &&
-    window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-  )
+export const pageVariants = {
+  initial: { opacity: 0, y: 10 },
+  enter: {
+    opacity: 1,
+    y: 0,
+    transition: { y: standardSpring, opacity: { duration: 0.18, ease: 'easeOut' } },
+  },
+  exit: { opacity: 0, y: -4, transition: { duration: 0.1, ease: 'easeIn' } },
 }
 
-/**
- * Lenis is the app's only smooth-scroll engine. It is driven by GSAP's ticker
- * so ScrollTrigger and Lenis share one clock, and it is skipped entirely when
- * the visitor prefers reduced motion.
- */
-export function useSmoothScroll() {
-  useEffect(() => {
-    if (prefersReducedMotion()) {
-      return undefined
-    }
+const animatedPage = {
+  variants: pageVariants,
+  initial: 'initial',
+  animate: 'enter',
+  exit: 'exit',
+}
 
-    const lenis = new Lenis({ duration: 1.1, smoothWheel: true })
-    const onTick = (time) => lenis.raf(time * 1000)
+const stillPage = { initial: false, animate: { opacity: 1, y: 0 }, transition: { duration: 0 } }
 
-    lenis.on('scroll', ScrollTrigger.update)
-    gsap.ticker.add(onTick)
-    gsap.ticker.lagSmoothing(0)
+export function getPageMotion(reducedMotion) {
+  return reducedMotion ? stillPage : animatedPage
+}
 
-    // Re-measure once fonts and media have settled.
-    const refresh = () => ScrollTrigger.refresh()
-    document.fonts?.ready.then(refresh).catch(() => {})
-    window.addEventListener('load', refresh)
+export const staggerContainer = {
+  initial: {},
+  enter: { transition: { staggerChildren: 0.045 } },
+}
 
-    return () => {
-      window.removeEventListener('load', refresh)
-      gsap.ticker.remove(onTick)
-      lenis.destroy()
-    }
-  }, [])
+export const staggerItem = {
+  initial: { opacity: 0, y: 6 },
+  enter: { opacity: 1, y: 0, transition: standardSpring },
+}
+
+export const cardInteraction = {
+  whileHover: { scale: 1.015 },
+  whileTap: { scale: 0.985 },
+  transition: standardSpring,
 }

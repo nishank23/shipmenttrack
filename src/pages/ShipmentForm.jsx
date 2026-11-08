@@ -1,64 +1,30 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import {
-  addDoc,
-  collection,
-  doc,
-  getDoc,
-  serverTimestamp,
-  updateDoc,
-} from 'firebase/firestore'
+import { addDoc, collection, doc, getDoc, serverTimestamp, updateDoc } from 'firebase/firestore'
+import { AnimatePresence, motion as Motion, useReducedMotion } from 'motion/react'
+import { Icon } from '@iconify/react'
 import { db } from '../../firebase'
 import useAuth from '../hooks/useAuth'
-import {
-  carriers,
-  detectCarrierFromBlNumber,
-  getCarrierBadgeClass,
-  getCarrierLabel,
-} from '../lib/carriers'
+import { carriers, detectCarrierFromBlNumber, getCarrierBrand } from '../lib/carriers'
+import { standardSpring } from '../lib/motion'
+import { normalizeDefaultCarrier } from '../lib/profileSettings'
+import { toTrackingDate } from '../lib/shipmentDetail'
+import { isTrackingNumber, normalizeTrackingNumber, resolveFormCarrier, validateShipmentForm } from '../lib/shipmentForm'
 import { lookupTracking, supportsLiveTracking } from '../lib/tracking'
+import { readUserSettings } from '../lib/users'
+import './ShipmentForm.css'
 
 const initialValues = {
-  invoiceNo: '',
-  blNo: '',
-  containerNumbers: '',
-  eta: '',
-  invAmount: '',
-  consigneeName: '',
-  notes: '',
-  carrier: '',
+  blNo: '', invoiceNo: '', eta: '', invAmount: '', consigneeName: '', containerNumbers: '', notes: '',
 }
+const idleLookup = { status: 'idle', eta: null, latestEvent: null, eventCount: 0, error: '' }
+const lookupDateFormatter = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium' })
 
-function normalizeDate(value) {
-  if (!value) {
-    return null
-  }
-
-  if (typeof value.toDate === 'function') {
-    return value.toDate()
-  }
-
-  if (value instanceof Date) {
-    return value
-  }
-
-  const parsedDate = new Date(value)
-
-  return Number.isNaN(parsedDate.getTime()) ? null : parsedDate
-}
-
-function formatDateInput(value) {
-  const date = normalizeDate(value)
-
-  if (!date) {
-    return ''
-  }
-
-  const year = date.getFullYear()
+function formatDateInput(date) {
+  if (!date) return ''
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
-
-  return `${year}-${month}-${day}`
+  return `${date.getFullYear()}-${month}-${day}`
 }
 
 function createDateFromInput(value) {
@@ -66,354 +32,335 @@ function createDateFromInput(value) {
   return new Date(year, month - 1, day, 12)
 }
 
-function validate(values) {
-  const nextErrors = {}
-
-  if (!values.invoiceNo.trim()) {
-    nextErrors.invoiceNo = 'Invoice number is required.'
-  }
-
-  if (!values.blNo.trim()) {
-    nextErrors.blNo = 'B/L number is required.'
-  }
-
-  if (!values.eta) {
-    nextErrors.eta = 'ETA is required.'
-  }
-
-  if (values.invAmount !== '') {
-    const amount = Number(values.invAmount)
-
-    if (Number.isNaN(amount)) {
-      nextErrors.invAmount = 'Invoice amount must be a valid number.'
-    } else if (amount < 0) {
-      nextErrors.invAmount = 'Invoice amount cannot be negative.'
-    }
-  }
-
-  return nextErrors
+function FloatingField({
+  name, label, value, error, hint, suffix, accent, type = 'text', rows, required, ...props
+}) {
+  const id = name === 'blNo' ? 'shipment-bl-number' : `shipment-${name}`
+  const Control = rows ? 'textarea' : 'input'
+  const describedBy = [error && `${id}-error`, hint && `${id}-hint`].filter(Boolean).join(' ') || undefined
+  return (
+    <div className="sf-field">
+      <div className="sf-control" data-field={name} data-filled={Boolean(value)} data-date={type === 'date'}
+        data-suffix={Boolean(accent)} style={accent ? { '--sf-carrier': accent } : undefined}>
+        <Control id={id} name={name} value={value} required={required} rows={rows}
+          type={rows ? undefined : type} className="st-field"
+          aria-invalid={Boolean(error)} aria-describedby={describedBy} {...props} />
+        <label htmlFor={id}>{label}{required && <span aria-hidden="true"> *</span>}</label>
+        {suffix}
+      </div>
+      {error && <p className="sf-field-error" id={`${id}-error`}>{error}</p>}
+      {hint && <div className="sf-hint" id={`${id}-hint`}>{hint}</div>}
+    </div>
+  )
 }
 
-const lookupDateFormatter = new Intl.DateTimeFormat('en-US', {
-  month: 'short',
-  day: 'numeric',
-  year: 'numeric',
-})
-
-const idleLookup = { status: 'idle', blNo: '', carrier: '', eta: null, latestEvent: null, eventCount: 0, error: '' }
-
-function formatLookupDate(value) {
-  const date = normalizeDate(value)
-  return date ? lookupDateFormatter.format(date) : '—'
+function CarrierBadge({ code, reducedMotion }) {
+  const brand = code ? getCarrierBrand(code) : null
+  return (
+    <AnimatePresence initial={false}>
+      {brand && (
+        <Motion.span key={code} className="sf-inline-carrier" aria-hidden="true" data-carrier={code}
+          style={{ '--sf-carrier': brand.accent }}
+          initial={reducedMotion ? false : { opacity: 0, x: 6 }}
+          animate={{ opacity: 1, x: 0 }}
+          exit={reducedMotion ? undefined : { opacity: 0, transition: { duration: 0.09 } }}
+          transition={reducedMotion ? { duration: 0 } : standardSpring}>
+          <i />{brand.label}
+        </Motion.span>
+      )}
+    </AnimatePresence>
+  )
 }
 
-function ShipmentForm() {
-  const { shipmentId } = useParams()
-  const [searchParams] = useSearchParams()
-  // Set by the landing page: the B/L the visitor typed before signing in.
-  const prefillBl = shipmentId
-    ? ''
-    : String(searchParams.get('bl') ?? '').toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 40)
-  const prefillLookupDoneRef = useRef(false)
-  const navigate = useNavigate()
-  const { currentUser } = useAuth()
-  const [values, setValues] = useState(initialValues)
-  const [errors, setErrors] = useState({})
-  const [formError, setFormError] = useState('')
-  const [isLoadingShipment, setIsLoadingShipment] = useState(Boolean(shipmentId))
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const [lookup, setLookup] = useState(idleLookup)
-  const etaTouchedRef = useRef(false)
-  const lookupRequestRef = useRef(0)
-  const isEditing = Boolean(shipmentId)
-
-  useEffect(() => {
-    if (!shipmentId) {
-      etaTouchedRef.current = false
-      setLookup(idleLookup)
-      setValues(
-        prefillBl
-          ? { ...initialValues, blNo: prefillBl, carrier: detectCarrierFromBlNumber(prefillBl) }
-          : initialValues,
-      )
-      setErrors({})
-      setFormError('')
-      setIsLoadingShipment(false)
-      return undefined
-    }
-
-    if (!currentUser?.uid) {
-      setIsLoadingShipment(false)
-      return undefined
-    }
-
-    let isMounted = true
-
-    async function loadShipment() {
-      setIsLoadingShipment(true)
-      setFormError('')
-
-      try {
-        const shipmentRef = doc(db, 'shipments', shipmentId)
-        const shipmentSnapshot = await getDoc(shipmentRef)
-
-        if (!shipmentSnapshot.exists()) {
-          throw new Error('Shipment not found.')
-        }
-
-        const shipment = shipmentSnapshot.data()
-
-        if (shipment.uid !== currentUser.uid) {
-          navigate('/dashboard', { replace: true })
-          return
-        }
-
-        if (!isMounted) {
-          return
-        }
-
-        // Existing shipment: its ETA was already chosen, never auto-replace it.
-        etaTouchedRef.current = true
-        setLookup({
-          status: shipment.latestEvent ? 'done' : 'idle',
-          blNo: String(shipment.blNo ?? shipment.blNumber ?? '').trim().toUpperCase(),
-          eta: normalizeDate(shipment.currentEta ?? shipment.eta),
-          latestEvent: shipment.latestEvent
-            ? {
-                ...shipment.latestEvent,
-                occurredAt: normalizeDate(shipment.latestEvent.occurredAt),
-              }
-            : null,
-          eventCount: shipment.eventCount ?? 0,
-          error: '',
-        })
-
-        setValues({
-          invoiceNo: shipment.invoiceNo ?? shipment.invoiceNumber ?? '',
-          blNo: shipment.blNo ?? shipment.blNumber ?? '',
-          containerNumbers: Array.isArray(shipment.containerNumbers)
-            ? shipment.containerNumbers.join('\n')
-            : shipment.containerNumbers ?? '',
-          eta: formatDateInput(shipment.eta),
-          invAmount:
-            shipment.invAmount === undefined ||
-            shipment.invAmount === null ||
-            shipment.invAmount === ''
-              ? ''
-              : String(shipment.invAmount),
-          consigneeName: shipment.consigneeName ?? '',
-          notes: shipment.notes ?? '',
-          carrier:
-            shipment.carrier ??
-            detectCarrierFromBlNumber(shipment.blNo ?? shipment.blNumber ?? ''),
-        })
-      } catch (loadError) {
-        console.error('Failed to load shipment for editing.', loadError)
-
-        if (isMounted) {
-          setFormError(
-            loadError instanceof Error
-              ? loadError.message
-              : 'Unable to load this shipment right now.',
+function CarrierPicker({ selected, detected, onChange, onClear }) {
+  return (
+    <fieldset className="sf-carriers" aria-describedby="sf-carrier-hint">
+      <legend>Carrier</legend>
+      <div className="sf-carriers__grid">
+        {carriers.map(({ code, label }) => {
+          const brand = getCarrierBrand(code)
+          return (
+            <label className="sf-carrier-option" key={code} style={{ '--sf-carrier': brand.accent }}>
+              <input className="sr-only" type="radio" name="carrier" value={code}
+                data-skip-bl-lookup
+                checked={selected === code} disabled={Boolean(detected)} onChange={() => onChange(code)} />
+              <span className="sf-carrier-card">
+                {brand.logo ? <img src={brand.logo} alt="" width="38" height="24" /> : <i aria-hidden="true" />}
+                <span>{label}</span>
+                <span className="sf-carrier-check" aria-hidden="true">
+                  <Icon icon="solar:check-circle-bold" width="16" height="16" />
+                </span>
+              </span>
+            </label>
           )
-        }
-      } finally {
-        if (isMounted) {
-          setIsLoadingShipment(false)
-        }
-      }
-    }
+        })}
+      </div>
+      <p className="sf-hint" id="sf-carrier-hint" aria-live="polite">
+        {detected ? `${getCarrierBrand(detected).label} matched from the B/L prefix.`
+          : 'Select a carrier if the prefix is not recognized.'}
+      </p>
+      {!detected && selected && <button type="button" className="sf-text-button" onClick={onClear}>Clear selection</button>}
+    </fieldset>
+  )
+}
 
-    loadShipment()
+function LookupPanel({ lookup, canLookup, hasNumber, onCheck, onUseEta, currentEta }) {
+  const busy = lookup.status === 'loading'
+  const eventDate = toTrackingDate(lookup.latestEvent?.occurredAt)
+  return (
+    <div className="sf-lookup">
+      <div className="sf-lookup__head">
+        <h3>Carrier lookup</h3>
+        {canLookup && (
+          <button className="sf-text-button" type="button" data-skip-bl-lookup disabled={busy} onClick={onCheck}>
+            {lookup.status === 'done' ? 'Refresh' : lookup.status === 'error' ? 'Retry' : 'Check carrier'}
+          </button>
+        )}
+      </div>
+      <div className="sf-lookup__result" aria-live="polite">
+        {lookup.status === 'done' ? (
+          <dl>
+            <div>
+              <dt>Latest event</dt>
+              <dd>{lookup.latestEvent?.title || 'No event reported'}</dd>
+              {lookup.latestEvent && (
+                <dd className="sf-hint">
+                  {[
+                    lookup.latestEvent.location,
+                    eventDate ? lookupDateFormatter.format(eventDate) : '',
+                    lookup.eventCount > 1 ? `${lookup.eventCount} events` : '',
+                  ].filter(Boolean).join(' · ')}
+                </dd>
+              )}
+            </div>
+            <div>
+              <dt>Carrier ETA</dt>
+              <dd>{lookup.eta ? lookupDateFormatter.format(lookup.eta) : 'Not available'}</dd>
+              {lookup.eta && formatDateInput(lookup.eta) !== currentEta && (
+                <dd><button className="sf-text-button" type="button" onClick={onUseEta}>Use carrier ETA</button></dd>
+              )}
+            </div>
+          </dl>
+        ) : busy ? <p className="sf-hint">Checking with the carrier…</p>
+          : lookup.status === 'error' ? <p className="sf-field-error">{lookup.error} You can enter the ETA manually.</p>
+            : <p className="sf-hint">{canLookup ? 'Check for the latest event and arrival estimate.'
+              : hasNumber ? 'Enter a complete B/L and select a carrier to check, or set the ETA manually.'
+                : 'A carrier check can fill in the estimated arrival date.'}</p>}
+      </div>
+    </div>
+  )
+}
 
-    return () => {
-      isMounted = false
-    }
-  }, [currentUser?.uid, navigate, shipmentId, prefillBl])
+function SaveButton({ state, isEditing, reducedMotion, disabled }) {
+  const label = state === 'saving' ? 'Saving…' : state === 'saved' ? 'Saved!' : isEditing ? 'Save changes' : 'Save shipment'
+  return (
+    <button className="st-primary sf-save" type="submit" disabled={disabled || state !== 'idle'}
+      aria-label={label} data-save-state={state}>
+      <AnimatePresence initial={false} mode="wait">
+        <Motion.span key={state} className="sf-save__content" aria-hidden="true"
+          initial={reducedMotion ? false : { opacity: 0, y: 3 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={reducedMotion ? undefined : { opacity: 0, y: -3 }}
+          transition={{ duration: reducedMotion ? 0 : 0.12 }}>
+          {state === 'saving' && <span className="sf-spinner" />}
+          {state === 'saved' && <Icon icon="solar:check-circle-bold" width="19" height="19" />}
+          {label}
+        </Motion.span>
+      </AnimatePresence>
+    </button>
+  )
+}
 
-  // Load live tracking once for a B/L handed over from the landing page.
+function ShipmentFormView({ shipmentId, uid, prefillBl }) {
+  const navigate = useNavigate()
+  const reducedMotion = useReducedMotion()
+  const isEditing = Boolean(shipmentId)
+  const [incomingBl] = useState(prefillBl)
+  const [values, setValues] = useState(() => ({ ...initialValues, blNo: incomingBl }))
+  const [manualCarrier, setManualCarrier] = useState(null)
+  const [defaultCarrier, setDefaultCarrier] = useState('')
+  const [errors, setErrors] = useState({})
+  const [invalidFields, setInvalidFields] = useState([])
+  const [formError, setFormError] = useState('')
+  const [loading, setLoading] = useState(isEditing)
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [saveState, setSaveState] = useState('idle')
+  const [lookup, setLookup] = useState(idleLookup)
+  const formRef = useRef(null)
+  const etaOrigin = useRef('')
+  const lookupRequest = useRef({ id: 0, key: '' })
+  const saveLocked = useRef(false)
+  const mounted = useRef(false)
+  const redirectTimer = useRef(null)
+  const detected = detectCarrierFromBlNumber(values.blNo)
+  const selectedCarrier = resolveFormCarrier(values.blNo, manualCarrier ?? defaultCarrier)
+  const prefillCarrier = resolveFormCarrier(incomingBl, defaultCarrier)
+  const canLookup = isTrackingNumber(values.blNo) && supportsLiveTracking(selectedCarrier)
+  const hasBadge = Boolean(normalizeTrackingNumber(values.blNo) && selectedCarrier)
+
   useEffect(() => {
-    if (!prefillBl || prefillLookupDoneRef.current || values.blNo !== prefillBl) {
-      return
+    mounted.current = true
+    return () => {
+      mounted.current = false
+      lookupRequest.current = { id: lookupRequest.current.id + 1, key: '' }
+      window.clearTimeout(redirectTimer.current)
     }
+  }, [])
 
-    prefillLookupDoneRef.current = true
-    runLookup()
-    // runLookup reads the current values; it only needs to run once here.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prefillBl, values.blNo])
+  useEffect(() => {
+    if (!uid || shipmentId) return
+    let ignore = false
+    readUserSettings(uid).then((settings) => {
+      if (!ignore) setDefaultCarrier(normalizeDefaultCarrier(settings.defaultCarrier))
+    }).catch((error) => {
+      if (!ignore) console.warn('Could not load default carrier.', error)
+    })
+    return () => { ignore = true }
+  }, [uid, shipmentId])
 
-  const handleChange = (field) => (event) => {
-    const nextValue = event.target.value
-
-    if (field === 'eta') {
-      etaTouchedRef.current = true
-    }
-
-    setValues((currentValues) => ({
-      ...currentValues,
-      [field]: nextValue,
-    }))
-
-    setErrors((currentErrors) => {
-      if (!currentErrors[field]) {
-        return currentErrors
+  useEffect(() => {
+    if (!shipmentId || !uid) return
+    let ignore = false
+    getDoc(doc(db, 'shipments', shipmentId)).then((snapshot) => {
+      if (ignore) return
+      if (!snapshot.exists()) throw new Error('Shipment not found.')
+      const shipment = snapshot.data()
+      if (shipment.uid !== uid) {
+        navigate('/dashboard', { replace: true })
+        return
       }
+      const blNo = String(shipment.blNo ?? shipment.blNumber ?? '')
+      const eta = toTrackingDate(shipment.currentEta ?? shipment.eta)
+      const carrier = resolveFormCarrier(blNo, shipment.carrier)
+      etaOrigin.current = 'saved'
+      setValues({
+        blNo,
+        invoiceNo: String(shipment.invoiceNo ?? shipment.invoiceNumber ?? ''),
+        eta: formatDateInput(eta),
+        invAmount: String(shipment.invAmount ?? ''),
+        consigneeName: shipment.consigneeName ?? '',
+        containerNumbers: Array.isArray(shipment.containerNumbers) ? shipment.containerNumbers.join('\n') : shipment.containerNumbers ?? '',
+        notes: shipment.notes ?? '',
+      })
+      setManualCarrier(detectCarrierFromBlNumber(blNo) ? '' : carrier)
+      if (shipment.latestEvent) {
+        lookupRequest.current.key = `${normalizeTrackingNumber(blNo)}:${carrier}`
+        setLookup({ ...idleLookup, status: 'done', latestEvent: shipment.latestEvent, eventCount: shipment.eventCount ?? 0 })
+      }
+      setLoading(false)
+    }).catch((loadError) => {
+      if (ignore) return
+      console.error('Failed to load shipment for editing.', loadError)
+      setFormError('This shipment could not be loaded for editing.')
+      setLoadFailed(true)
+      setLoading(false)
+    })
+    return () => { ignore = true }
+  }, [navigate, shipmentId, uid])
 
-      const nextErrors = { ...currentErrors }
-      delete nextErrors[field]
-      return nextErrors
+  useLayoutEffect(() => {
+    if (!invalidFields.length) return
+    formRef.current?.elements.namedItem(invalidFields[0])?.focus()
+    if (reducedMotion) return
+    const animations = invalidFields.map((field) =>
+      formRef.current?.querySelector(`[data-field="${field}"]`)?.animate?.(
+        [0, -5, 5, -3, 3, 0].map((x) => ({ transform: `translateX(${x}px)` })),
+        { duration: 310, easing: 'ease-out' },
+      ),
+    )
+    return () => animations.forEach((animation) => animation?.cancel())
+  }, [invalidFields, reducedMotion])
+
+  function clearError(field) {
+    setErrors((previous) => {
+      if (!previous[field]) return previous
+      const next = { ...previous }
+      delete next[field]
+      return next
     })
   }
 
-  const runLookup = async ({ force = false, carrier: carrierOverride } = {}) => {
-    const blNo = values.blNo.trim().toUpperCase().replace(/\s+/g, '')
-    const carrier = detectCarrierFromBlNumber(blNo) || carrierOverride || values.carrier
+  function invalidateLookup() {
+    lookupRequest.current = { id: lookupRequest.current.id + 1, key: '' }
+    setLookup(idleLookup)
+    if (etaOrigin.current !== 'carrier') return
+    etaOrigin.current = ''
+    setValues((previous) => ({ ...previous, eta: '' }))
+  }
 
-    if (!blNo) {
-      setLookup(idleLookup)
-      return
-    }
+  function changeField(field, value) {
+    if (field === 'eta') etaOrigin.current = 'manual'
+    if (field === 'blNo' && normalizeTrackingNumber(value) !== normalizeTrackingNumber(values.blNo)) invalidateLookup()
+    setValues((previous) => ({ ...previous, [field]: value }))
+    clearError(field)
+  }
 
-    if (!supportsLiveTracking(carrier)) {
-      setLookup({ ...idleLookup, status: 'unsupported', blNo })
-      return
-    }
-
-    if (
-      !force &&
-      lookup.blNo === blNo &&
-      lookup.carrier === carrier &&
-      lookup.status !== 'error'
-    ) {
-      return
-    }
-
-    const requestId = lookupRequestRef.current + 1
-    lookupRequestRef.current = requestId
-    setLookup({ ...idleLookup, status: 'loading', blNo, carrier })
-
+  async function runLookup(rawBlNo, carrier, force = false) {
+    if (saveLocked.current || !isTrackingNumber(rawBlNo) || !supportsLiveTracking(carrier)) return
+    const blNo = normalizeTrackingNumber(rawBlNo)
+    const key = `${blNo}:${carrier}`
+    if (!force && lookupRequest.current.key === key) return
+    const id = lookupRequest.current.id + 1
+    lookupRequest.current = { id, key }
+    setLookup({ ...idleLookup, status: 'loading' })
     try {
       const result = await lookupTracking({ blNo, carrier })
-
-      if (lookupRequestRef.current !== requestId) {
-        return
-      }
-
-      const carrierEta = normalizeDate(result.eta)
-
-      setLookup({
-        status: 'done',
-        blNo,
-        carrier,
-        eta: carrierEta,
-        latestEvent: result.latestEvent
-          ? { ...result.latestEvent, occurredAt: normalizeDate(result.latestEvent.occurredAt) }
-          : null,
-        eventCount: result.eventCount ?? 0,
-        error: '',
-      })
-
-      // Prefill ETA from the carrier unless the user already typed one.
-      if (carrierEta && !etaTouchedRef.current) {
-        setValues((currentValues) => ({
-          ...currentValues,
-          eta: formatDateInput(carrierEta),
-        }))
-        setErrors((currentErrors) => {
-          const nextErrors = { ...currentErrors }
-          delete nextErrors.eta
-          return nextErrors
-        })
+      if (lookupRequest.current.id !== id) return
+      const eta = toTrackingDate(result.eta)
+      setLookup({ ...idleLookup, status: 'done', eta, latestEvent: result.latestEvent, eventCount: result.eventCount ?? 0 })
+      if (eta && !saveLocked.current && (!etaOrigin.current || etaOrigin.current === 'carrier')) {
+        etaOrigin.current = 'carrier'
+        setValues((previous) => ({ ...previous, eta: formatDateInput(eta) }))
+        clearError('eta')
       }
     } catch (lookupError) {
-      if (lookupRequestRef.current !== requestId) {
-        return
-      }
-
+      if (lookupRequest.current.id !== id) return
+      lookupRequest.current.key = ''
       console.error('Tracking lookup failed.', lookupError)
-      setLookup({
-        ...idleLookup,
-        status: 'error',
-        blNo,
-        carrier,
-        error: lookupError?.message || 'Tracking lookup failed.',
-      })
+      setLookup({ ...idleLookup, status: 'error', error: 'The carrier lookup did not complete.' })
     }
   }
 
-  const handleBlBlur = () => {
-    const detectedCarrier = detectCarrierFromBlNumber(values.blNo)
+  const runPrefill = useEffectEvent((blNo, carrier) => {
+    if (manualCarrier === null && normalizeTrackingNumber(values.blNo) === blNo) runLookup(blNo, carrier)
+  })
+  useEffect(() => {
+    if (shipmentId || !incomingBl || !prefillCarrier) return
+    const task = window.setTimeout(() => runPrefill(incomingBl, prefillCarrier), 0)
+    return () => window.clearTimeout(task)
+  }, [incomingBl, prefillCarrier, shipmentId])
 
-    // Keep a manually chosen carrier when the B/L has no known prefix
-    // (booking refs without a carrier prefix).
-    if (detectedCarrier) {
-      setValues((currentValues) => ({
-        ...currentValues,
-        carrier: detectedCarrier,
-      }))
-    }
-
-    runLookup()
+  function selectCarrier(code) {
+    if (detected) return
+    invalidateLookup()
+    setManualCarrier(code)
+    runLookup(values.blNo, code)
   }
 
-  const handleCarrierSelect = (event) => {
-    const carrier = event.target.value
-
-    setValues((currentValues) => ({
-      ...currentValues,
-      carrier,
-    }))
-
-    if (carrier) {
-      runLookup({ force: true, carrier })
-    }
-  }
-
-  const useCarrierEta = () => {
-    if (!lookup.eta) {
-      return
-    }
-
-    setValues((currentValues) => ({
-      ...currentValues,
-      eta: formatDateInput(lookup.eta),
-    }))
-  }
-
-  const handleSubmit = async (event) => {
+  async function handleSubmit(event) {
     event.preventDefault()
-
-    const nextErrors = validate(values)
+    if (saveLocked.current || loadFailed) return
+    const nextErrors = validateShipmentForm(values)
     setErrors(nextErrors)
-
-    if (Object.keys(nextErrors).length > 0) {
+    setInvalidFields(Object.keys(nextErrors))
+    if (Object.keys(nextErrors).length) return
+    if (!uid) {
+      setFormError('Sign in to save this shipment.')
       return
     }
 
-    if (!currentUser?.uid) {
-      setFormError('You must be signed in to save a shipment.')
-      return
-    }
-
-    setIsSubmitting(true)
+    saveLocked.current = true
+    setSaveState('saving')
     setFormError('')
-
-    const detectedCarrier = detectCarrierFromBlNumber(values.blNo)
-    const containerNumbers = values.containerNumbers
-      .split('\n')
-      .map((containerNumber) => containerNumber.trim())
-      .filter(Boolean)
-
-    const shipmentPayload = {
-      uid: currentUser.uid,
+    const eta = createDateFromInput(values.eta)
+    const payload = {
+      uid,
       invoiceNo: values.invoiceNo.trim(),
-      blNo: values.blNo.trim(),
-      carrier: detectedCarrier || values.carrier || 'Unknown',
-      containerNumbers,
-      eta: createDateFromInput(values.eta),
-      // The ETA the user confirmed on the form is the current official ETA.
-      currentEta: createDateFromInput(values.eta),
+      blNo: normalizeTrackingNumber(values.blNo),
+      carrier: selectedCarrier || 'Unknown',
+      containerNumbers: values.containerNumbers.split('\n').map((number) => number.trim()).filter(Boolean),
+      eta,
+      currentEta: eta,
       invAmount: values.invAmount === '' ? null : Number(values.invAmount),
       consigneeName: values.consigneeName.trim(),
       notes: values.notes.trim(),
@@ -421,368 +368,110 @@ function ShipmentForm() {
     }
 
     try {
-      let savedShipmentId = shipmentId
+      let savedId = shipmentId
+      if (isEditing) await updateDoc(doc(db, 'shipments', shipmentId), payload)
+      else savedId = (await addDoc(collection(db, 'shipments'), { ...payload, createdAt: serverTimestamp() })).id
 
-      if (isEditing) {
-        await updateDoc(doc(db, 'shipments', shipmentId), shipmentPayload)
-      } else {
-        const createdRef = await addDoc(collection(db, 'shipments'), {
-          ...shipmentPayload,
-          createdAt: serverTimestamp(),
-        })
-        savedShipmentId = createdRef.id
+      // Carrier events remain server-owned, and syncing them does not block the save.
+      if (supportsLiveTracking(payload.carrier)) {
+        lookupTracking({ blNo: payload.blNo, carrier: payload.carrier, shipmentId: savedId })
+          .catch((error) => console.error('Background tracking sync failed.', error))
       }
-
-      // Events are server-owned: ask the backend to store them on the shipment.
-      // Runs in the background; the dashboard updates live when it finishes.
-      if (supportsLiveTracking(shipmentPayload.carrier)) {
-        lookupTracking({
-          blNo: shipmentPayload.blNo,
-          carrier: shipmentPayload.carrier,
-          shipmentId: savedShipmentId,
-        }).catch((syncError) => {
-          console.error('Background tracking sync failed.', syncError)
-        })
-      }
-
-      navigate('/dashboard')
+      if (!mounted.current) return
+      setSaveState('saved')
+      redirectTimer.current = window.setTimeout(() => navigate('/dashboard'), 680)
     } catch (submitError) {
+      if (!mounted.current) return
       console.error('Failed to save shipment.', submitError)
-      setFormError('Shipment could not be saved. Please try again.')
-    } finally {
-      setIsSubmitting(false)
+      saveLocked.current = false
+      setSaveState('idle')
+      setFormError('Shipment could not be saved. Your entries are still here; try again.')
     }
   }
 
-  const pageTitle = isEditing ? 'Edit shipment' : 'Add shipment'
-  const pageCopy = isEditing
-    ? 'Update the shipment details and keep your ETA list accurate.'
-    : 'Capture a new shipment, detect the carrier from the B/L number, and prepare ETA email alerts.'
+  function field(name) {
+    return { name, value: values[name], error: errors[name], onChange: (event) => changeField(name, event.target.value) }
+  }
 
   return (
-    <main className="app-shell mx-auto min-h-screen w-full max-w-5xl px-4 py-8 sm:px-6 lg:px-8">
-      <div className="space-y-6">
-        <div className="app-motion-card flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="text-sm font-medium tracking-[0.24em] text-sky-600 uppercase dark:text-sky-200">
-              ShipTrack
-            </p>
-            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-950 dark:text-white">
-              {pageTitle}
-            </h1>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
-              {pageCopy}
-            </p>
-          </div>
-
-          <Link
-            to="/dashboard"
-            className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:text-slate-100 dark:hover:bg-white/10"
-          >
-            Back to dashboard
-          </Link>
+    <main className="sf">
+      <header className="sf-header">
+        <div>
+          <h1>{isEditing ? 'Edit shipment' : 'Add shipment'}</h1>
+          <p>{isEditing ? 'Update the tracking reference, arrival estimate, and shipment details.'
+            : 'Enter a bill of lading and set an estimated arrival.'}</p>
         </div>
+        <Link to="/dashboard" className="sf-back">
+          <Icon icon="solar:arrow-left-linear" width="17" height="17" aria-hidden="true" />
+          Shipments
+        </Link>
+      </header>
 
-        <section className="app-motion-card rounded-[2rem] border border-slate-200/80 bg-white/90 p-6 shadow-xl shadow-slate-900/5 backdrop-blur dark:border-white/10 dark:bg-slate-950/70 dark:shadow-black/20 sm:p-8">
-          {isLoadingShipment ? (
-            <div className="flex min-h-80 items-center justify-center text-sm text-slate-500 dark:text-slate-300">
-              Loading shipment details...
-            </div>
-          ) : (
-            <form className="space-y-6" onSubmit={handleSubmit} noValidate>
-              {formError ? (
-                <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-100">
-                  {formError}
-                </div>
-              ) : null}
-
-              <div className="grid gap-6 md:grid-cols-2">
-                <label className="flex flex-col gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
-                  Invoice No
-                  <input
-                    type="text"
-                    value={values.invoiceNo}
-                    onChange={handleChange('invoiceNo')}
-                    className={`rounded-2xl border bg-white px-4 py-3 text-sm text-slate-950 outline-none transition dark:bg-slate-900 dark:text-white ${
-                      errors.invoiceNo
-                        ? 'border-rose-300 focus:border-rose-400 focus:ring-2 focus:ring-rose-100 dark:border-rose-500/40 dark:focus:ring-rose-500/20'
-                        : 'border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-200 dark:border-white/10 dark:focus:ring-sky-500/20'
-                    }`}
-                    placeholder="INV-2026-001"
-                    required
-                  />
-                  {errors.invoiceNo ? (
-                    <span className="text-xs text-rose-600 dark:text-rose-200">
-                      {errors.invoiceNo}
-                    </span>
-                  ) : null}
-                </label>
-
-                <label className="flex flex-col gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
-                  B/L Number
-                  <input
-                    type="text"
-                    value={values.blNo}
-                    onChange={handleChange('blNo')}
-                    onBlur={handleBlBlur}
-                    className={`rounded-2xl border bg-white px-4 py-3 text-sm text-slate-950 outline-none transition dark:bg-slate-900 dark:text-white ${
-                      errors.blNo
-                        ? 'border-rose-300 focus:border-rose-400 focus:ring-2 focus:ring-rose-100 dark:border-rose-500/40 dark:focus:ring-rose-500/20'
-                        : 'border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-200 dark:border-white/10 dark:focus:ring-sky-500/20'
-                    }`}
-                    placeholder="MEDU1234567"
-                    required
-                  />
-                  <div className="flex min-h-6 items-center gap-2">
-                    {detectCarrierFromBlNumber(values.blNo) ? (
-                      <span
-                        className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${getCarrierBadgeClass(values.carrier)}`}
-                      >
-                        {getCarrierLabel(values.carrier)}
-                      </span>
-                    ) : values.blNo.trim() ? (
-                      <select
-                        aria-label="Carrier"
-                        value={values.carrier}
-                        onChange={handleCarrierSelect}
-                        className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-normal text-slate-900 dark:border-white/10 dark:bg-slate-900 dark:text-white"
-                      >
-                        <option value="">Select carrier…</option>
-                        {carriers.map((carrier) => (
-                          <option key={carrier.code} value={carrier.code}>
-                            {carrier.label}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <span className="text-xs text-slate-500 dark:text-slate-400">
-                        Carrier auto-detect runs when you leave this field.
-                      </span>
-                    )}
-                  </div>
-                  {errors.blNo ? (
-                    <span className="text-xs text-rose-600 dark:text-rose-200">
-                      {errors.blNo}
-                    </span>
-                  ) : null}
-                </label>
-
-                <label className="flex flex-col gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
-                  ETA
-                  <input
-                    type="date"
-                    value={values.eta}
-                    onChange={handleChange('eta')}
-                    className={`rounded-2xl border bg-white px-4 py-3 text-sm text-slate-950 outline-none transition dark:bg-slate-900 dark:text-white ${
-                      errors.eta
-                        ? 'border-rose-300 focus:border-rose-400 focus:ring-2 focus:ring-rose-100 dark:border-rose-500/40 dark:focus:ring-rose-500/20'
-                        : 'border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-200 dark:border-white/10 dark:focus:ring-sky-500/20'
-                    }`}
-                    required
-                  />
-                  {errors.eta ? (
-                    <span className="text-xs text-rose-600 dark:text-rose-200">
-                      {errors.eta}
-                    </span>
-                  ) : null}
-                  {lookup.status === 'done' && lookup.eta ? (
-                    <span className="flex flex-wrap items-center gap-2 text-xs font-normal text-slate-500 dark:text-slate-400">
-                      Carrier ETA: {formatLookupDate(lookup.eta)}
-                      {values.eta !== formatDateInput(lookup.eta) ? (
-                        <button
-                          type="button"
-                          onClick={useCarrierEta}
-                          className="font-medium text-sky-600 underline-offset-2 hover:underline dark:text-sky-300"
-                        >
-                          Use carrier ETA
-                        </button>
-                      ) : null}
-                    </span>
-                  ) : null}
-                </label>
-
-
-                <label className="flex flex-col gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
-                  INV Amount
-                  <div className="relative">
-                    <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-sm text-slate-500 dark:text-slate-400">
-                      $
-                    </span>
-                    <input
-                      type="number"
-                      value={values.invAmount}
-                      onChange={handleChange('invAmount')}
-                      min="0"
-                      step="0.01"
-                      className={`w-full rounded-2xl border bg-white py-3 pr-4 pl-8 text-sm text-slate-950 outline-none transition dark:bg-slate-900 dark:text-white ${
-                        errors.invAmount
-                          ? 'border-rose-300 focus:border-rose-400 focus:ring-2 focus:ring-rose-100 dark:border-rose-500/40 dark:focus:ring-rose-500/20'
-                          : 'border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-200 dark:border-white/10 dark:focus:ring-sky-500/20'
-                      }`}
-                      placeholder="12500.00"
-                    />
-                  </div>
-                  {errors.invAmount ? (
-                    <span className="text-xs text-rose-600 dark:text-rose-200">
-                      {errors.invAmount}
-                    </span>
-                  ) : null}
-                </label>
+      {loading ? <p className="sf-panel sf-loading" role="status">Loading shipment details…</p> : (
+        <form ref={formRef} onSubmit={handleSubmit} noValidate>
+          {formError && <p className="sf-alert" role="alert">{formError}</p>}
+          <fieldset className="sf-fields" disabled={saveState !== 'idle' || loadFailed}>
+            <section className="sf-section" aria-labelledby="sf-tracking-title">
+              <div className="sf-section__intro">
+                <h2 id="sf-tracking-title">Tracking</h2>
+                <p>ShipTrack matches supported carriers from the B/L prefix as you type.</p>
               </div>
-
-              <section
-                aria-live="polite"
-                className="rounded-3xl border border-slate-200/70 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/5"
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm font-medium text-slate-900 dark:text-white">
-                    Live tracking
-                  </p>
-                  {lookup.status === 'done' || lookup.status === 'error' ? (
-                    <button
-                      type="button"
-                      onClick={() => runLookup({ force: true })}
-                      className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-white dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/10"
-                    >
-                      Refresh
-                    </button>
-                  ) : null}
-                </div>
-
-                {lookup.status === 'idle' ? (
-                  <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">
-                    Enter a B/L number to load the current event and ETA from the carrier.
-                  </p>
-                ) : null}
-                {lookup.status === 'unsupported' ? (
-                  <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">
-                    Live tracking is not available for this carrier. Enter the ETA manually.
-                  </p>
-                ) : null}
-                {lookup.status === 'loading' ? (
-                  <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">
-                    Checking {lookup.blNo} with the carrier…
-                  </p>
-                ) : null}
-                {lookup.status === 'error' ? (
-                  <p className="mt-2 text-xs leading-5 text-rose-600 dark:text-rose-200">
-                    {lookup.error} You can still enter the ETA manually.
-                  </p>
-                ) : null}
-                {lookup.status === 'done' ? (
-                  <dl className="mt-3 grid gap-3 sm:grid-cols-2">
-                    <div className="rounded-2xl border border-slate-200/70 bg-white p-3 dark:border-white/10 dark:bg-slate-950/70">
-                      <dt className="text-xs tracking-[0.18em] text-slate-500 uppercase dark:text-slate-400">
-                        Current event · set by carrier
-                      </dt>
-                      <dd className="mt-1 text-sm font-semibold text-slate-950 dark:text-white">
-                        {lookup.latestEvent?.title ?? 'No events reported yet'}
-                      </dd>
-                      {lookup.latestEvent ? (
-                        <dd className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                          {[
-                            lookup.latestEvent.location,
-                            formatLookupDate(lookup.latestEvent.occurredAt),
-                            lookup.eventCount > 1 ? `${lookup.eventCount} events` : '',
-                          ]
-                            .filter(Boolean)
-                            .join(' · ')}
-                        </dd>
-                      ) : null}
-                    </div>
-                    <div className="rounded-2xl border border-slate-200/70 bg-white p-3 dark:border-white/10 dark:bg-slate-950/70">
-                      <dt className="text-xs tracking-[0.18em] text-slate-500 uppercase dark:text-slate-400">
-                        Carrier ETA
-                      </dt>
-                      <dd className="mt-1 text-sm font-semibold text-slate-950 dark:text-white">
-                        {lookup.eta ? formatLookupDate(lookup.eta) : 'Not provided'}
-                      </dd>
-                      <dd className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                        You can change the ETA field above.
-                      </dd>
-                    </div>
-                  </dl>
-                ) : null}
-              </section>
-
-              <label className="flex flex-col gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
-                Container numbers
-                <textarea
-                  value={values.containerNumbers}
-                  onChange={handleChange('containerNumbers')}
-                  rows={5}
-                  className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-950 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-200 dark:border-white/10 dark:bg-slate-900 dark:text-white dark:focus:ring-sky-500/20"
-                  placeholder={'MSCU1234567\nMSDU2345678'}
-                />
-                <span className="text-xs text-slate-500 dark:text-slate-400">
-                  Add one container number per line. They will be saved as a list.
-                </span>
-              </label>
-
-              <div className="grid gap-6 md:grid-cols-2">
-                <label className="flex flex-col gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
-                  Consignee name
-                  <input
-                    type="text"
-                    value={values.consigneeName}
-                    onChange={handleChange('consigneeName')}
-                    className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-950 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-200 dark:border-white/10 dark:bg-slate-900 dark:text-white dark:focus:ring-sky-500/20"
-                    placeholder="Acme Distribution Ltd."
-                  />
-                </label>
-
-                <div className="rounded-3xl border border-dashed border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/5">
-                  <p className="text-sm font-medium text-slate-900 dark:text-white">
-                    Carrier prefixes
-                  </p>
-                  <p className="mt-2 text-xs leading-6 text-slate-600 dark:text-slate-300">
-                    {carriers.map((carrier) => (
-                      <span key={carrier.code} className="block">
-                        {carrier.label}: {carrier.prefixes.join(', ')}
-                      </span>
-                    ))}
-                  </p>
-                </div>
+              <div className="sf-panel sf-tracking">
+                <FloatingField {...field('blNo')} label="B/L number" required autoComplete="off" autoCapitalize="characters" spellCheck={false}
+                  placeholder="MEDU1234567" accent={hasBadge ? getCarrierBrand(selectedCarrier).accent : undefined}
+                  onBlur={(event) => {
+                    if (!event.relatedTarget?.closest?.('[data-skip-bl-lookup]')) runLookup(values.blNo, selectedCarrier)
+                  }}
+                  suffix={<CarrierBadge code={hasBadge ? selectedCarrier : ''} reducedMotion={reducedMotion} />} />
+                <CarrierPicker selected={selectedCarrier} detected={detected} onChange={selectCarrier} onClear={() => {
+                  selectCarrier('')
+                  formRef.current?.elements.namedItem('blNo')?.focus()
+                }} />
+                <LookupPanel lookup={lookup} canLookup={canLookup} hasNumber={Boolean(values.blNo.trim())} currentEta={values.eta}
+                  onCheck={() => runLookup(values.blNo, selectedCarrier, true)}
+                  onUseEta={() => {
+                    if (!lookup.eta) return
+                    etaOrigin.current = 'carrier'
+                    setValues((previous) => ({ ...previous, eta: formatDateInput(lookup.eta) }))
+                    clearError('eta')
+                  }} />
               </div>
+            </section>
 
-              <label className="flex flex-col gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
-                Notes
-                <textarea
-                  value={values.notes}
-                  onChange={handleChange('notes')}
-                  rows={5}
-                  className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-950 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-200 dark:border-white/10 dark:bg-slate-900 dark:text-white dark:focus:ring-sky-500/20"
-                  placeholder="Optional handling notes, milestones, or follow-up details."
-                />
-              </label>
-
-              <div className="flex flex-col gap-3 border-t border-slate-200 pt-6 dark:border-white/10 sm:flex-row sm:items-center sm:justify-end">
-                <Link
-                  to="/dashboard"
-                  className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:text-slate-100 dark:hover:bg-white/10"
-                >
-                  Cancel
-                </Link>
-                <button
-                  type="submit"
-                  disabled={isSubmitting}
-                  className="inline-flex items-center justify-center rounded-2xl bg-slate-950 px-5 py-3 text-sm font-medium text-white shadow-lg shadow-slate-950/10 transition hover:-translate-y-0.5 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70 dark:bg-cyan-300 dark:text-slate-950 dark:shadow-cyan-400/10 dark:hover:bg-cyan-200"
-                >
-                  {isSubmitting
-                    ? isEditing
-                      ? 'Updating shipment...'
-                      : 'Saving shipment...'
-                    : isEditing
-                      ? 'Update shipment'
-                      : 'Save shipment'}
-                </button>
+            <section className="sf-section" aria-labelledby="sf-details-title">
+              <div className="sf-section__intro">
+                <h2 id="sf-details-title">Shipment details</h2>
+                <p>Confirm the invoice number and ETA. The remaining fields are optional.</p>
               </div>
-            </form>
-          )}
-        </section>
-      </div>
+              <div className="sf-panel sf-details">
+                <FloatingField {...field('invoiceNo')} label="Invoice number" required autoComplete="off" />
+                <FloatingField {...field('eta')} label="Estimated arrival" type="date" required />
+                <FloatingField {...field('consigneeName')} label="Consignee name" />
+                <FloatingField {...field('invAmount')} label="Invoice amount (USD)" type="number" min="0" step="0.01" />
+                <FloatingField {...field('containerNumbers')} label="Container numbers" rows={2}
+                  hint="One container number per line." spellCheck={false} />
+                <FloatingField {...field('notes')} label="Notes" rows={2} />
+              </div>
+            </section>
+          </fieldset>
+          <div className="sf-actions">
+            <Link to="/dashboard" className="st-secondary sf-cancel">Cancel</Link>
+            <SaveButton state={saveState} isEditing={isEditing} reducedMotion={reducedMotion} disabled={loadFailed} />
+            <span className="sr-only" role="status">{saveState === 'saved' ? 'Shipment saved.' : saveState === 'saving' ? 'Saving shipment.' : ''}</span>
+          </div>
+        </form>
+      )}
     </main>
   )
+}
+
+function ShipmentForm() {
+  const { shipmentId } = useParams()
+  const [searchParams] = useSearchParams()
+  const { currentUser } = useAuth()
+  const prefillBl = shipmentId ? '' : normalizeTrackingNumber(searchParams.get('bl')).replace(/[^A-Z0-9-]/g, '')
+  const uid = currentUser?.uid
+  return <ShipmentFormView key={`${uid}:${shipmentId ?? 'new'}`} shipmentId={shipmentId} prefillBl={prefillBl} uid={uid} />
 }
 
 export default ShipmentForm

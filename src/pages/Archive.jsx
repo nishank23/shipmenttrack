@@ -1,257 +1,285 @@
-import { useEffect, useState } from 'react'
+import { useDeferredValue, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { collection, deleteDoc, doc, onSnapshot, query, where } from 'firebase/firestore'
+import { AnimatePresence, motion as Motion, useIsPresent, useReducedMotion } from 'motion/react'
 import { db } from '../../firebase'
+import containerArt from '../assets/archive-container.webp'
 import useAuth from '../hooks/useAuth'
 import { getCarrierBadgeClass, getCarrierLabel } from '../lib/carriers'
+import { filterArchive, getArchiveDeliveryDate } from '../lib/shipmentArchive'
+import { toTrackingDate } from '../lib/shipmentDetail'
 import { describeArchiveReason, setShipmentArchived } from '../lib/tracking'
+import './Archive.css'
 
-const dateFormatter = new Intl.DateTimeFormat('en-US', {
-  month: 'short',
-  day: 'numeric',
-  year: 'numeric',
-})
+const dateFormat = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium' })
+const dateFields = [['archivedAt', 'Archived'], ['deliveredAt', 'Delivered']]
+const ranges = [['all', 'Any date'], ['30', '30 days'], ['90', '90 days'], ['year', 'This year']]
 
-function normalizeDate(value) {
-  if (!value) {
-    return null
-  }
-
-  if (typeof value.toDate === 'function') {
-    return value.toDate()
-  }
-
-  const parsedDate = value instanceof Date ? value : new Date(value)
-  return Number.isNaN(parsedDate.getTime()) ? null : parsedDate
-}
-
-function formatDate(value) {
-  const date = normalizeDate(value)
-  return date ? dateFormatter.format(date) : '—'
-}
-
-function mapArchivedShipment(documentSnapshot) {
-  const data = documentSnapshot.data()
-
+function mapShipment(snapshot) {
+  const data = snapshot.data()
   return {
-    id: documentSnapshot.id,
-    invoiceNo: data.invoiceNo ?? data.invoiceNumber ?? '—',
-    blNo: data.blNo ?? data.blNumber ?? '—',
-    carrier: String(data.carrier ?? 'Unknown').trim() || 'Unknown',
-    eta: data.currentEta ?? data.eta,
-    latestEvent: data.latestEvent ?? null,
-    archivedAt: normalizeDate(data.archivedAt),
-    archiveReason: data.archiveReason ?? '',
+    id: snapshot.id,
+    invoiceNo: String(data.invoiceNo ?? data.invoiceNumber ?? data.invoice ?? '').trim(),
+    blNo: String(data.blNo ?? data.blNumber ?? data.billOfLadingNo ?? '').trim(),
+    consignee: String(data.consigneeName ?? '').trim(),
+    carrier: String(data.carrier ?? '').trim().toUpperCase() || 'Unknown',
+    archivedAt: toTrackingDate(data.archivedAt),
+    deliveredAt: getArchiveDeliveryDate(data, Date.now()),
+    archiveReason: data.archiveReason,
   }
 }
 
-function Archive() {
-  const { currentUser } = useAuth()
-  const [shipments, setShipments] = useState([])
-  const [isLoading, setIsLoading] = useState(true)
-  const [busyId, setBusyId] = useState('')
-  const [error, setError] = useState('')
+function ArchiveDate({ value }) {
+  return value ? <time dateTime={value.toISOString()}>{dateFormat.format(value)}</time> : 'Not reported'
+}
+
+function Pills({ label, options, selected, onSelect }) {
+  return (
+    <div className="ar-filter">
+      <span>{label}</span>
+      <div className="ar-pills" role="group" aria-label={label}>
+        {options.map(([value, name]) => (
+          <button type="button" key={value} aria-pressed={value === selected} onClick={() => onSelect(value)}>{name}</button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function RowActions({ id, title, busy, onAction }) {
+  const [mode, setMode] = useState(null)
+  const [above, setAbove] = useState(false)
+  const open = mode !== null
+  const root = useRef(null)
+  const trigger = useRef(null)
+  const menu = useRef(null)
+
+  function positionMenu() {
+    if (!root.current || !menu.current) return
+    const { top, bottom } = root.current.getBoundingClientRect()
+    const height = menu.current.offsetHeight
+    setAbove(window.innerHeight - bottom < height + 8 && top >= height + 8)
+  }
 
   useEffect(() => {
-    if (!currentUser?.uid) {
-      setShipments([])
-      setIsLoading(false)
-      return undefined
+    if (!open) return
+    const outside = (event) => {
+      if (!root.current?.contains(event.target)) setMode(null)
     }
-
-    setIsLoading(true)
-
-    // Sorted client-side to avoid needing a composite index.
-    const archiveQuery = query(
-      collection(db, 'archived_shipments'),
-      where('uid', '==', currentUser.uid),
-    )
-
-    return onSnapshot(
-      archiveQuery,
-      (snapshot) => {
-        setShipments(
-          snapshot.docs
-            .map(mapArchivedShipment)
-            .sort(
-              (left, right) =>
-                (right.archivedAt?.getTime() ?? 0) - (left.archivedAt?.getTime() ?? 0),
-            ),
-        )
-        setIsLoading(false)
-      },
-      (snapshotError) => {
-        console.error('Failed to load archived shipments.', snapshotError)
-        setError('Unable to load the archive right now.')
-        setIsLoading(false)
-      },
-    )
-  }, [currentUser?.uid])
-
-  const handleRestore = async (shipmentId) => {
-    setError('')
-    setBusyId(shipmentId)
-
-    try {
-      await setShipmentArchived(shipmentId, false)
-    } catch (restoreError) {
-      console.error('Failed to restore shipment.', restoreError)
-      setError('Shipment could not be restored. Please try again.')
-    } finally {
-      setBusyId('')
+    const escape = (event) => {
+      if (event.key !== 'Escape') return
+      if (menu.current?.contains(document.activeElement)) trigger.current?.focus()
+      setMode(null)
     }
+    document.addEventListener('pointerdown', outside)
+    document.addEventListener('keydown', escape)
+    return () => {
+      document.removeEventListener('pointerdown', outside)
+      document.removeEventListener('keydown', escape)
+    }
+  }, [open])
+
+  return (
+    <div role="cell" className="ar-actions" data-open={open} data-above={above} ref={root}
+      onPointerEnter={(event) => {
+        if (event.pointerType !== 'mouse' || !window.matchMedia('(hover: hover)').matches) return
+        if (document.activeElement?.closest('.ar-actions[data-open="true"]') && !root.current?.contains(document.activeElement)) return
+        positionMenu()
+        setMode((current) => current ?? 'hover')
+      }}
+      onPointerLeave={() => setMode((current) => current === 'hover' && !root.current?.contains(document.activeElement) ? null : current)}
+      onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setMode(null) }}>
+      <button type="button" className="ar-actions__toggle" aria-expanded={open} aria-controls={`archive-actions-${id}`}
+        aria-label={`Actions for ${title}`} ref={trigger} onClick={() => {
+          positionMenu()
+          setMode((current) => current === 'pinned' ? null : 'pinned')
+        }}>
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+          <circle cx="5" cy="10" r="1.4" /><circle cx="10" cy="10" r="1.4" /><circle cx="15" cy="10" r="1.4" />
+        </svg>
+      </button>
+      <div className="ar-actions__menu" id={`archive-actions-${id}`} ref={menu} inert={!open}>
+        <button type="button" aria-disabled={busy} onClick={() => onAction('restore')}>Restore to active</button>
+        <button type="button" aria-disabled={busy} className="ar-actions__delete" onClick={() => onAction('delete')}>Delete permanently</button>
+      </div>
+    </div>
+  )
+}
+
+function ArchiveRow({ shipment, busy, onAction }) {
+  const present = useIsPresent()
+  const title = shipment.invoiceNo || shipment.blNo || 'Shipment record'
+  const collapse = { height: 0, opacity: 0, overflow: 'hidden', transition: { duration: 0.23, ease: 'easeInOut' } }
+  return (
+    <Motion.div role="row" className="ar-row-shell" data-archive-row={shipment.id} inert={!present}
+      initial={false} animate="visible" exit="removed" variants={{
+        visible: { height: 'auto', opacity: 1 },
+        removed: ({ removed, reduced }) => !reduced && removed === shipment.id ? collapse : { transition: { duration: 0 } },
+      }}>
+      <div className="ar-row">
+        <div className="ar-row__name" role="cell">
+          <Link to={`/shipments/${shipment.id}`} state={{ fromArchive: true }}>{title}</Link>
+          {shipment.consignee && <p>{shipment.consignee}</p>}
+        </div>
+        <div className="ar-row__tracking" role="cell">
+          <span className="ar-mobile-label">B/L number</span>
+          {shipment.blNo ? <code>{shipment.blNo}</code> : <span>Not recorded</span>}
+        </div>
+        <div className="ar-row__carrier" role="cell">
+          <span className={`ar-carrier ${getCarrierBadgeClass(shipment.carrier)}`}>{getCarrierLabel(shipment.carrier)}</span>
+        </div>
+        <div className="ar-row__delivered" role="cell">
+          <span className="ar-mobile-label">Delivered</span>
+          <ArchiveDate value={shipment.deliveredAt} />
+        </div>
+        <div className="ar-row__archived" role="cell">
+          <span className="ar-mobile-label">Archived</span>
+          <ArchiveDate value={shipment.archivedAt} />
+          <p>{describeArchiveReason(shipment.archiveReason)}</p>
+        </div>
+        <RowActions id={shipment.id} title={title} busy={busy} onAction={(kind) => onAction(shipment, kind)} />
+      </div>
+    </Motion.div>
+  )
+}
+
+function ArchiveVault({ uid }) {
+  const [shipments, setShipments] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+  const [feedback, setFeedback] = useState(null)
+  const [busy, setBusy] = useState(null)
+  const [removed, setRemoved] = useState(null)
+  const [search, setSearch] = useState('')
+  const [carrier, setCarrier] = useState('all')
+  const [range, setRange] = useState('all')
+  const [dateField, setDateField] = useState('archivedAt')
+  const [now, setNow] = useState(Date.now)
+  const searchRef = useRef(null)
+  const actionLock = useRef(false)
+  const reduced = useReducedMotion()
+  const searchTerm = useDeferredValue(search)
+
+  useEffect(() => {
+    if (!uid) return
+    const archive = query(collection(db, 'archived_shipments'), where('uid', '==', uid))
+    return onSnapshot(archive, (snapshot) => {
+      setShipments(snapshot.docs.map(mapShipment))
+      setNow(Date.now())
+      setLoading(false)
+      setLoadError('')
+    }, (error) => {
+      console.error('Failed to load archived shipments.', error)
+      setLoadError('The archive could not be loaded. Refresh the page to try again.')
+      setLoading(false)
+    })
+  }, [uid])
+
+  const allRows = busy && !shipments.some(({ id }) => id === busy.id) ? [...shipments, busy] : shipments
+  const carrierCodes = [...new Set(allRows.map((shipment) => shipment.carrier))]
+  const carrierOptions = [['all', 'All carriers'], ...[...new Set([...carrierCodes, carrier])].filter((code) => code !== 'all')
+    .sort((left, right) => getCarrierLabel(left).localeCompare(getCarrierLabel(right)))
+    .map((code) => [code, getCarrierLabel(code)])]
+  const rows = filterArchive(allRows, { search: searchTerm, carrier, range, dateField }, now)
+  const filtered = Boolean(search.trim() || carrier !== 'all' || range !== 'all' || dateField !== 'archivedAt')
+
+  function clearFilters() {
+    setSearch('')
+    setCarrier('all')
+    setRange('all')
+    setDateField('archivedAt')
+    searchRef.current?.focus()
   }
 
-  const handleDelete = async (shipmentId) => {
-    const confirmed = window.confirm(
-      'Permanently delete this archived shipment? This action cannot be undone.',
-    )
-
-    if (!confirmed) {
-      return
-    }
-
-    setError('')
-    setBusyId(shipmentId)
-
+  async function changeShipment(shipment, kind) {
+    if (actionLock.current) return
+    if (kind === 'delete' && !window.confirm(`Permanently delete ${shipment.invoiceNo || shipment.blNo || 'this shipment'}? This cannot be undone.`)) return
+    actionLock.current = true
+    setFeedback(null)
+    setBusy(shipment)
     try {
-      await deleteDoc(doc(db, 'archived_shipments', shipmentId))
-    } catch (deleteError) {
-      console.error('Failed to delete archived shipment.', deleteError)
-      setError('Shipment could not be deleted. Please try again.')
+      if (kind === 'restore') await setShipmentArchived(shipment.id, false)
+      else await deleteDoc(doc(db, 'archived_shipments', shipment.id))
+      if (document.activeElement?.closest('[data-archive-row]')?.dataset.archiveRow === shipment.id) {
+        searchRef.current?.focus({ preventScroll: true })
+      }
+      const rowVisible = Array.from(searchRef.current?.closest('.ar')?.querySelectorAll('[data-archive-row]:not([inert])') ?? [])
+        .some((row) => row.dataset.archiveRow === shipment.id)
+      setRemoved(rowVisible ? shipment.id : null)
+      setShipments((previous) => previous.filter(({ id }) => id !== shipment.id))
+      setFeedback({ text: kind === 'restore' ? 'Shipment restored to active.' : 'Shipment permanently deleted.' })
+    } catch (error) {
+      console.error('Archive action failed.', error)
+      setFeedback({ error: true, text: kind === 'restore' ? 'The shipment could not be restored.' : 'The shipment could not be deleted.' })
     } finally {
-      setBusyId('')
+      actionLock.current = false
+      setBusy(null)
     }
   }
 
   return (
-    <main className="app-shell mx-auto min-h-screen w-full max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-      <div className="space-y-6">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="text-sm font-medium tracking-[0.24em] text-sky-600 uppercase dark:text-sky-200">
-              ShipTrack
-            </p>
-            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-950 dark:text-white">
-              Archive
-            </h1>
-            <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
-              Completed imports move here automatically once the empty container is
-              returned. You can also archive shipments yourself.
-            </p>
+    <main className="ar">
+      <header className="ar-heading">
+        <div><h1>Archive</h1><p>Find completed imports and shipments you archived manually.</p></div>
+        <Link to="/dashboard" className="st-secondary ar-back">Active shipments</Link>
+      </header>
+      <section className="ar-panel" aria-labelledby="archive-records">
+        <div className="ar-toolbar">
+          <div className="ar-toolbar__top">
+            <h2 id="archive-records">Archived shipments</h2>
+            <span className="ar-count" role="status">{loading ? 'Loading' : loadError ? 'Unavailable' : `${rows.length} of ${allRows.length} archived`}</span>
           </div>
-          <Link
-            to="/dashboard"
-            className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:text-slate-100 dark:hover:bg-white/10"
-          >
-            Back to dashboard
-          </Link>
+          <label className="ar-search">
+            <span className="sr-only">Search archive</span>
+            <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+              <circle cx="8.5" cy="8.5" r="5" /><path d="m12.2 12.2 4.3 4.3" strokeLinecap="round" />
+            </svg>
+            <input ref={searchRef} className="st-field" type="search" value={search} onChange={(event) => setSearch(event.target.value)}
+              placeholder="Invoice, B/L or consignee" />
+          </label>
+          <div className="ar-filters">
+            <Pills label="Date field" options={dateFields} selected={dateField} onSelect={setDateField} />
+            <Pills label="Date range" options={ranges} selected={range} onSelect={(value) => { setRange(value); setNow(Date.now()) }} />
+            <Pills label="Carrier" options={carrierOptions} selected={carrier} onSelect={setCarrier} />
+            {filtered && <button type="button" className="ar-clear" onClick={clearFilters}>Clear filters</button>}
+          </div>
+          {(loadError || feedback) && <p className="ar-feedback" data-error={Boolean(loadError || feedback?.error)}
+            role={loadError || feedback?.error ? 'alert' : 'status'}>{loadError || feedback.text}</p>}
         </div>
-
-        {error ? (
-          <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-100">
-            {error}
+        <div role="table" aria-label="Archived shipments" aria-busy={loading}>
+          <div role="row" className="ar-row ar-columns">
+            <span role="columnheader">Shipment</span>
+            <span role="columnheader">B/L number</span>
+            <span role="columnheader">Carrier</span>
+            {['deliveredAt', 'archivedAt'].map((field) => (
+              <span role="columnheader" aria-sort={dateField === field ? 'descending' : undefined} key={field}>
+                {field === 'deliveredAt' ? 'Delivered' : 'Archived'}
+              </span>
+            ))}
+            <span role="columnheader" className="sr-only">Actions</span>
           </div>
-        ) : null}
-
-        <section className="overflow-hidden rounded-3xl border border-slate-200/70 bg-white/90 dark:border-white/10 dark:bg-slate-950/80">
-          {isLoading ? (
-            <div className="px-6 py-12 text-center text-sm text-slate-500 dark:text-slate-300">
-              Loading archive...
-            </div>
-          ) : shipments.length === 0 ? (
-            <div className="px-6 py-12 text-center text-sm text-slate-500 dark:text-slate-300">
-              No archived shipments yet.
-            </div>
+          <div role="rowgroup">
+            <AnimatePresence initial={false} custom={{ removed, reduced }} onExitComplete={() => setRemoved(null)}>
+              {rows.map((shipment) => <ArchiveRow key={shipment.id} shipment={shipment} busy={Boolean(busy)} onAction={changeShipment} />)}
+            </AnimatePresence>
+          </div>
+        </div>
+        {loading ? <p className="ar-state" role="status">Loading archived shipments...</p>
+          : !loadError && !rows.length && !removed && (allRows.length ? (
+            <div className="ar-state"><h3>No matching shipments</h3><p>Try another search or clear the filters.</p></div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-left">
-                <thead className="bg-slate-50 text-xs tracking-[0.2em] text-slate-500 uppercase dark:bg-white/5 dark:text-slate-400">
-                  <tr>
-                    <th className="px-4 py-4 font-medium sm:px-6">Invoice No</th>
-                    <th className="px-4 py-4 font-medium sm:px-6">B/L No</th>
-                    <th className="px-4 py-4 font-medium sm:px-6">Carrier</th>
-                    <th className="px-4 py-4 font-medium sm:px-6">Final event</th>
-                    <th className="px-4 py-4 font-medium sm:px-6">Archived</th>
-                    <th className="px-4 py-4 font-medium sm:px-6">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200/70 text-sm dark:divide-white/10">
-                  {shipments.map((shipment) => (
-                    <tr key={shipment.id} className="align-middle">
-                      <td className="whitespace-nowrap px-4 py-4 font-medium text-slate-950 dark:text-white sm:px-6">
-                        {shipment.invoiceNo}
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-4 text-slate-600 dark:text-slate-300 sm:px-6">
-                        {shipment.blNo}
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-4 sm:px-6">
-                        <span
-                          className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${getCarrierBadgeClass(shipment.carrier)}`}
-                        >
-                          {getCarrierLabel(shipment.carrier)}
-                        </span>
-                      </td>
-                      <td className="min-w-[200px] px-4 py-4 sm:px-6">
-                        {shipment.latestEvent ? (
-                          <>
-                            <p className="font-medium text-slate-900 dark:text-white">
-                              {shipment.latestEvent.title}
-                            </p>
-                            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                              {[shipment.latestEvent.location, formatDate(shipment.latestEvent.occurredAt)]
-                                .filter(Boolean)
-                                .join(' · ')}
-                            </p>
-                          </>
-                        ) : (
-                          <span className="text-xs text-slate-400">—</span>
-                        )}
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-4 sm:px-6">
-                        <p className="text-slate-700 dark:text-slate-200">
-                          {formatDate(shipment.archivedAt)}
-                        </p>
-                        <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                          {describeArchiveReason(shipment.archiveReason)}
-                        </p>
-                      </td>
-                      <td className="px-4 py-4 sm:px-6">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <Link
-                            to={`/shipments/${shipment.id}`}
-                            className="inline-flex items-center rounded-xl border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50 dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/5"
-                          >
-                            View
-                          </Link>
-                          <button
-                            type="button"
-                            onClick={() => handleRestore(shipment.id)}
-                            disabled={busyId === shipment.id}
-                            className="inline-flex items-center rounded-xl border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-70 dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/5"
-                          >
-                            {busyId === shipment.id ? 'Working...' : 'Restore'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDelete(shipment.id)}
-                            disabled={busyId === shipment.id}
-                            className="inline-flex items-center rounded-xl border border-rose-200 px-3 py-2 text-xs font-medium text-rose-700 transition hover:bg-rose-50 disabled:opacity-70 dark:border-rose-500/30 dark:text-rose-200 dark:hover:bg-rose-500/10"
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="ar-state ar-state--empty">
+              <img className="ar-illustration" src={containerArt} width="384" height="256" decoding="async" alt="" />
+              <div><h3>No archived shipments yet</h3><p>Archived shipments will appear here. You can restore them to active tracking at any time.</p>
+                <Link to="/dashboard" className="st-secondary ar-back">View active shipments</Link></div>
             </div>
-          )}
-        </section>
-      </div>
+          ))}
+      </section>
     </main>
   )
 }
 
-export default Archive
+export default function Archive() {
+  const { currentUser } = useAuth()
+  return <ArchiveVault key={currentUser?.uid} uid={currentUser?.uid} />
+}

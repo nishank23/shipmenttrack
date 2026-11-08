@@ -1,423 +1,230 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Navigate } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { Link, Navigate } from 'react-router-dom'
 import { Icon } from '@iconify/react'
+import EtaUpdateDemo from '../components/EtaUpdateDemo'
 import useAuth from '../hooks/useAuth'
-import ArrivalLane from '../components/ArrivalLane'
-import { carriers, detectCarrierFromBlNumber, getCarrierLabel } from '../lib/carriers'
-import { gsap, prefersReducedMotion, useSmoothScroll } from '../lib/motion'
+import { detectCarrierFromBlNumber, getCarrierLabel } from '../lib/carriers'
 import '../landing.css'
 
-// Set before Google sign-in so the add form opens with this B/L after login.
 const PENDING_BL_KEY = 'shiptrack:pendingBl'
-const EXAMPLE_BL = 'MEDUKU648102'
-const ADVANCE_MS = 4800
 
-const frames = [
-  { id: 'check', name: 'Carrier check', short: 'Check' },
-  { id: 'moves', name: 'Container moves', short: 'Moves' },
-  { id: 'lane', name: 'Arrival lane', short: 'Lane' },
-  { id: 'alert', name: 'ETA email', short: 'Email' },
-]
+function cleanBillOfLading(value) {
+  return value.toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 40)
+}
 
-// One real voyage ShipTrack recorded (invoice 547-GVCS, MSC).
-const moves = [
-  { title: 'Empty to Shipper', place: 'Surabaya', date: 'Aug 19' },
-  { title: 'Export Loaded on Vessel', place: 'Surabaya', date: 'Aug 29' },
-  { title: 'Full Transshipment Discharged', place: 'Port Elizabeth', date: 'Oct 14', current: true },
-  { title: 'Full Transshipment Loaded', place: 'Port Elizabeth', date: 'Nov 2' },
-  { title: 'Estimated Time of Arrival', place: 'Maputo', date: 'Nov 13', planned: true },
-]
+function storePendingBl(value) {
+  try {
+    if (value) window.sessionStorage.setItem(PENDING_BL_KEY, value)
+    else window.sessionStorage.removeItem(PENDING_BL_KEY)
+  } catch {
+    // The active sign-in attempt still carries its B/L in memory.
+  }
+}
 
-// Four real MSC shipments, placed relative to today.
-const laneDemo = [
-  { id: 'd546', label: '546-GVCS', daysLeft: -12, bucket: 'overdue', lines: ['MEDUKU647997 · MSC', 'Empty received at CY, Beira'] },
-  { id: 'd524', label: '524-GVCS', daysLeft: -2, bucket: 'overdue', lines: ['MEDUKU574985 · MSC', 'ETA passed 2 days ago'] },
-  { id: 'd548', label: '548-GVCS', daysLeft: 2, bucket: 'week', lines: ['MEDUKU574829 · MSC', 'Arrives in 2 days'] },
-  { id: 'd547', label: '547-GVCS', daysLeft: 6, bucket: 'week', lines: ['MEDUKU648102 · MSC', 'Arrives in 6 days'] },
-]
+function SignedInRedirect({ requestedBl }) {
+  const [billOfLading] = useState(() => {
+    if (requestedBl !== null) return requestedBl
+    try {
+      return cleanBillOfLading(window.sessionStorage.getItem(PENDING_BL_KEY) ?? '')
+    } catch {
+      return ''
+    }
+  })
+
+  useEffect(() => {
+    storePendingBl('')
+  }, [])
+
+  return <Navigate to={billOfLading ? `/add?bl=${encodeURIComponent(billOfLading)}` : '/dashboard'} replace />
+}
 
 function ShipTrackMark() {
   return (
-    <svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true">
-      <rect x="2" y="8" width="28" height="16" rx="2" fill="#1f3038" />
-      <path d="M8 11v10M13 11v10M18 11v10M23 11v10" stroke="#f7f9fa" strokeWidth="2" strokeLinecap="round" />
+    <svg viewBox="0 0 32 32" width="28" height="28" aria-hidden="true">
+      <rect x="2" y="8" width="28" height="16" rx="2" fill="currentColor" />
+      <path d="M8 11v10M13 11v10M18 11v10M23 11v10" stroke="var(--lp-mark-lines)" strokeWidth="2" strokeLinecap="round" />
     </svg>
   )
 }
 
-function readPendingBl() {
-  try {
-    return window.sessionStorage.getItem(PENDING_BL_KEY) || ''
-  } catch {
-    return ''
+function GoogleMark() {
+  return (
+    <svg viewBox="0 0 48 48" width="18" height="18" aria-hidden="true">
+      <path fill="#4285f4" d="M43.6 24.5c0-1.4-.1-2.8-.4-4.1H24v7.8h11a9.5 9.5 0 0 1-4.1 6.2v5h6.6c3.9-3.6 6.1-8.9 6.1-14.9Z" />
+      <path fill="#34a853" d="M24 44c5.5 0 10.2-1.8 13.5-4.9l-6.6-5c-1.8 1.2-4.1 1.9-6.9 1.9-5.3 0-9.8-3.6-11.4-8.4H5.8v5.2A20 20 0 0 0 24 44Z" />
+      <path fill="#fbbc05" d="M12.6 27.6a12 12 0 0 1 0-7.2v-5.2H5.8a20 20 0 0 0 0 17.6l6.8-5.2Z" />
+      <path fill="#ea4335" d="M24 12c3 0 5.7 1 7.8 3.1l5.8-5.8A19.2 19.2 0 0 0 24 4 20 20 0 0 0 5.8 15.2l6.8 5.2C14.2 15.6 18.7 12 24 12Z" />
+    </svg>
+  )
+}
+
+function AuthButton({ type, variant, pending, disabled, onClick, children }) {
+  return (
+    <button
+      type={type}
+      className={`lp-button lp-button--${variant}`}
+      data-pending={pending || undefined}
+      aria-busy={pending}
+      disabled={disabled}
+      onClick={onClick}
+    >
+      <span className="lp-button-label">{children}</span>
+      <span className="lp-button-progress" aria-hidden="true">
+        <span className="lp-spinner" />
+        <span className="lp-progress-message">Please wait</span>
+      </span>
+    </button>
+  )
+}
+
+function getSignInMessage(error) {
+  switch (error?.code) {
+    case 'auth/popup-closed-by-user':
+      return 'The Google window closed. Try again when you are ready.'
+    case 'auth/popup-blocked':
+      return 'Allow pop-ups for this site, then try again.'
+    case 'auth/network-request-failed':
+      return 'Check your connection, then try signing in again.'
+    default:
+      return 'Google sign-in did not finish. Please try again.'
   }
-}
-
-function CheckFrame({ bl }) {
-  const shown = bl || EXAMPLE_BL
-  const carrier = detectCarrierFromBlNumber(shown)
-  const prefix = carrier
-    ? carriers.find((entry) => entry.code === carrier).prefixes.find((value) => shown.startsWith(value))
-    : ''
-  const isExample = !bl
-
-  return (
-    <>
-      <div className="lp-frame-head">
-        <span className="lp-frame-title">Carrier check</span>
-        <span>{isExample ? 'Example' : 'Your B/L'}</span>
-      </div>
-      <p className="lp-check-bl">
-        {prefix ? <mark>{prefix}</mark> : null}
-        {shown.slice(prefix.length)}
-      </p>
-      <p className="lp-check-note">
-        {prefix
-          ? `Read from the prefix ${prefix}, one of ${carriers.find((entry) => entry.code === carrier).prefixes.length} that ${getCarrierLabel(carrier)} uses on its bills of lading.`
-          : 'No prefix ShipTrack knows yet. You choose the carrier after signing in.'}
-      </p>
-      <dl className="lp-check-grid">
-        <div>
-          <dt>Carrier</dt>
-          <dd>{carrier ? getCarrierLabel(carrier) : 'Pick after sign-in'}</dd>
-        </div>
-        <div>
-          <dt>Containers</dt>
-          <dd>{isExample ? '3' : 'After sign-in'}</dd>
-        </div>
-        <div>
-          <dt>Carrier ETA</dt>
-          <dd>{isExample ? 'Nov 13, 2026' : 'After sign-in'}</dd>
-        </div>
-      </dl>
-    </>
-  )
-}
-
-function MovesFrame() {
-  return (
-    <>
-      <div className="lp-frame-head">
-        <span className="lp-frame-title">Container moves</span>
-        <span>FCIU4446860 · 5 of 24</span>
-      </div>
-      <ol className="lp-moves">
-        {moves.map((move) => (
-          <li key={move.title} className={move.current ? 'is-current' : ''}>
-            <span className="lp-move-title">
-              {move.title} <span className="lp-move-place">· {move.place}</span>
-              {move.planned ? <span className="lp-tag">Planned</span> : null}
-            </span>
-            <time>{move.date}</time>
-          </li>
-        ))}
-      </ol>
-    </>
-  )
-}
-
-function AlertFrame() {
-  return (
-    <div className="lp-mail">
-      <div className="lp-frame-head">
-        <span className="lp-frame-title">ETA email</span>
-        <span>08:00, Maputo time</span>
-      </div>
-      <p className="lp-mail-subject">ShipTrack: Shipment ETA Updated</p>
-      <p className="lp-mail-meta">To your alert address, the morning the carrier changes the date.</p>
-      <table>
-        <thead>
-          <tr>
-            <th scope="col">Invoice</th>
-            <th scope="col">B/L</th>
-            <th scope="col" className="lp-col-prev">Was</th>
-            <th scope="col">Now</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>547-GVCS</td>
-            <td>MEDUKU648102</td>
-            <td className="lp-col-prev">Nov 9</td>
-            <td className="is-late">Nov 13</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-  )
 }
 
 function Login() {
   const { configError, currentUser, loading, signInWithGoogle } = useAuth()
-  const [blNo, setBlNo] = useState('')
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const [error, setError] = useState('')
-  const [active, setActive] = useState(0)
-  const [paused, setPaused] = useState(false)
-  const rootRef = useRef(null)
-  const reelRef = useRef(null)
-  const trackRef = useRef(null)
-  const firstPlaceRef = useRef(true)
+  const [billOfLading, setBillOfLading] = useState('')
+  const [requestedBl, setRequestedBl] = useState(null)
+  const [action, setAction] = useState(null)
+  const [fieldError, setFieldError] = useState('')
+  const [authError, setAuthError] = useState('')
+  const inputRef = useRef(null)
+  const signingInRef = useRef(false)
+  const cleanBl = cleanBillOfLading(billOfLading)
+  const carrier = detectCarrierFromBlNumber(cleanBl)
+  const busy = Boolean(action) || loading
+  const disabled = busy || Boolean(configError)
+  const hasIdentifier = /[A-Z0-9]/.test(cleanBl)
 
-  useSmoothScroll()
+  async function startSignIn(nextAction) {
+    if (signingInRef.current || disabled) return
 
-  const isRedirecting = !loading && Boolean(currentUser)
-  const cleanBl = blNo.toUpperCase().replace(/[^A-Z0-9]/g, '')
-
-  // Centre the active frame on the headline's line; on phones, show it in place.
-  const placeReel = useCallback(
-    (animate) => {
-      const track = trackRef.current
-      const frame = track?.children[active]
-      if (!track || !frame) return
-
-      const stacked = window.matchMedia('(max-width: 960px)').matches
-      const y = stacked ? -frame.offsetTop : -(frame.offsetTop + frame.offsetHeight / 2)
-
-      if (!animate || prefersReducedMotion()) {
-        gsap.set(track, { y })
-      } else {
-        gsap.to(track, { y, duration: 1.1, ease: 'expo.inOut', overwrite: true })
-      }
-    },
-    [active],
-  )
-
-  useLayoutEffect(() => {
-    if (isRedirecting) return
-    placeReel(!firstPlaceRef.current)
-    firstPlaceRef.current = false
-  }, [placeReel, isRedirecting])
-
-  useEffect(() => {
-    const reel = reelRef.current
-    if (!reel || typeof ResizeObserver === 'undefined') return undefined
-    const observer = new ResizeObserver(() => placeReel(false))
-    observer.observe(reel)
-    return () => observer.disconnect()
-  }, [placeReel])
-
-  // The reel advances on its own; hover, focus, typing or a hidden tab pause it.
-  useEffect(() => {
-    if (isRedirecting || paused || prefersReducedMotion()) return undefined
-
-    let timer = window.setInterval(() => setActive((current) => (current + 1) % frames.length), ADVANCE_MS)
-    const onVisibility = () => {
-      window.clearInterval(timer)
-      if (!document.hidden) {
-        timer = window.setInterval(() => setActive((current) => (current + 1) % frames.length), ADVANCE_MS)
-      }
-    }
-    document.addEventListener('visibilitychange', onVisibility)
-    return () => {
-      window.clearInterval(timer)
-      document.removeEventListener('visibilitychange', onVisibility)
-    }
-  }, [isRedirecting, paused])
-
-  // Opening: the two halves of the sentence part around the reel.
-  useLayoutEffect(() => {
-    const root = rootRef.current
-    if (!root || isRedirecting || prefersReducedMotion()) return undefined
-
-    const ctx = gsap.context(() => {
-      gsap
-        .timeline({ defaults: { ease: 'expo.out' } })
-        .from('.lp-top > *', { y: -12, opacity: 0, duration: 0.8, stagger: 0.06 })
-        .from('.lp-half--left', { x: 120, opacity: 0, duration: 1.4 }, 0.1)
-        .from('.lp-half--right', { x: -120, opacity: 0, duration: 1.4 }, 0.1)
-        .from('.lp-reel', { scale: 0.92, opacity: 0, duration: 1.3 }, 0.2)
-        .from('.lp-reel-nav', { opacity: 0, duration: 0.8 }, 0.7)
-        .from('.lp-lead, .lp-form, .lp-quiet', { y: 20, opacity: 0, duration: 1, stagger: 0.08 }, 0.55)
-    }, root)
-
-    return () => ctx.revert()
-  }, [isRedirecting])
-
-  if (isRedirecting) {
-    const pendingBl = readPendingBl()
-
-    if (pendingBl) {
-      try {
-        window.sessionStorage.removeItem(PENDING_BL_KEY)
-      } catch {
-        // Storage unavailable: nothing to clear.
-      }
-      return <Navigate to={`/add?bl=${encodeURIComponent(pendingBl)}`} replace />
+    setAuthError('')
+    if ((nextAction === 'track' || billOfLading.trim()) && !hasIdentifier) {
+      setFieldError(billOfLading.trim()
+        ? 'Use letters or numbers for the B/L.'
+        : 'Enter a B/L number to track.')
+      inputRef.current?.focus()
+      return
     }
 
-    return <Navigate to="/dashboard" replace />
-  }
-
-  const detected = detectCarrierFromBlNumber(cleanBl)
-
-  const handleSignIn = async (event) => {
-    event?.preventDefault()
-    setError('')
-
-    if (cleanBl) {
-      try {
-        window.sessionStorage.setItem(PENDING_BL_KEY, cleanBl)
-      } catch {
-        // Storage unavailable: the user lands on the dashboard instead.
-      }
-    }
-
-    setIsSubmitting(true)
+    signingInRef.current = true
+    setFieldError('')
+    setRequestedBl(cleanBl)
+    storePendingBl(cleanBl)
+    setAction(nextAction)
 
     try {
       await signInWithGoogle()
-    } catch (signInError) {
-      console.error('Google sign-in failed.', signInError)
-      setError('Google sign-in did not finish. Try again.')
-    } finally {
-      setIsSubmitting(false)
+    } catch (error) {
+      storePendingBl('')
+      setRequestedBl(null)
+      setAuthError(getSignInMessage(error))
+      signingInRef.current = false
+      setAction(null)
     }
   }
 
-  const handleBlChange = (event) => {
-    setBlNo(event.target.value)
-    setActive(0)
+  if (!loading && currentUser) {
+    return <SignedInRedirect requestedBl={requestedBl} />
   }
 
-  const busy = loading || isSubmitting || Boolean(configError)
-
-  let hint = <>Free with a Google account. Your B/L carries over.</>
-  let hintTone = ''
-  if (configError) {
-    hint = 'Sign-in is unavailable: Firebase keys are missing.'
-    hintTone = 'is-error'
-  } else if (error) {
-    hint = error
-    hintTone = 'is-error'
-  } else if (cleanBl && detected) {
-    hint = (
-      <>
-        <strong>{getCarrierLabel(detected)}</strong> bill of lading. Sign in to load its containers and ETA.
-      </>
-    )
-  } else if (cleanBl) {
-    hint = 'Prefix not recognised yet. You can pick the carrier after signing in.'
-  }
-
-  const frameBody = (id) => {
-    if (id === 'check') return <CheckFrame bl={cleanBl} />
-    if (id === 'moves') return <MovesFrame />
-    // Remount when shown so the lane performs its entrance in view.
-    if (id === 'lane') return <ArrivalLane key={active === 2 ? 'shown' : 'waiting'} shipments={laneDemo} from={-14} to={21} compact title="Arrival lane" caption="Today in the middle" />
-    return <AlertFrame />
-  }
+  const fieldHint = carrier ? `${getCarrierLabel(carrier)} detected`
+    : hasIdentifier ? 'Choose a carrier after signing in.'
+      : 'Optional for Google sign-in.'
 
   return (
-    <main ref={rootRef} className="lp">
+    <main className="lp">
       <header className="lp-top">
-        <a href="/" className="lp-word">
+        <Link to="/" className="lp-word">
           <ShipTrackMark />
           ShipTrack
-        </a>
-        <div className="lp-top-right">
-          <span className="lp-top-note">MSC, ONE, Evergreen and PIL</span>
-          <button type="button" className="lp-textlink" onClick={handleSignIn} disabled={busy}>
-            Sign in
-          </button>
-        </div>
+        </Link>
+        <a className="lp-source" href="https://github.com/nishank23/shipmenttrack">Source on GitHub</a>
       </header>
 
-      <section className="lp-stage" aria-labelledby="lp-title">
-        <h1 id="lp-title">
-          <span className="lp-half lp-half--left">Paste a B/L.</span>{' '}
-          <span className="lp-half lp-half--right">Watch it land.</span>
-        </h1>
+      <div className="lp-shell">
+        <section className="lp-entry" aria-labelledby="lp-title">
+          <h1 id="lp-title">Track shipment ETAs.</h1>
+          <p className="lp-intro">Follow carrier ETAs and get an email when they change.</p>
 
-        <div
-          ref={reelRef}
-          className="lp-reel"
-          role="region"
-          aria-roledescription="carousel"
-          aria-label="What ShipTrack shows for a B/L"
-          onMouseEnter={() => setPaused(true)}
-          onMouseLeave={() => setPaused(false)}
-          onFocus={() => setPaused(true)}
-          onBlur={() => setPaused(false)}
-        >
-          <div ref={trackRef} className="lp-reel-track">
-            {frames.map((frame, index) => (
-              <div
-                key={frame.id}
-                className={`lp-frame ${index === active ? 'is-active' : ''}`}
-                role="group"
-                aria-roledescription="slide"
-                aria-label={`${index + 1} of ${frames.length}: ${frame.name}`}
-                inert={index !== active}
-                data-ui
-              >
-                <div className="lp-frame-inner">{frameBody(frame.id)}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <nav className="lp-reel-nav" aria-label="Choose a view">
-          <ul className="lp-reel-steps">
-            {frames.map((frame, index) => (
-              <li key={frame.id}>
-                <button
-                  type="button"
-                  aria-current={index === active ? 'true' : undefined}
-                  onClick={() => {
-                    setActive(index)
-                    setPaused(true)
-                  }}
-                >
-                  <span className="lp-step-long">{frame.name}</span>
-                  <span className="lp-step-short" aria-hidden="true">
-                    {frame.short}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </nav>
-      </section>
-
-      <div className="lp-bottom">
-        <div>
-          <p className="lp-lead">
-            ShipTrack follows every container on an MSC, ONE, Evergreen or PIL bill of lading and emails
-            you before the ETA moves.
-          </p>
-          <form className="lp-form" onSubmit={handleSignIn}>
-            <label htmlFor="lp-bl">Bill of lading number</label>
-            <div className="lp-form-row">
+          <form
+            className="lp-card"
+            onSubmit={(event) => {
+              event.preventDefault()
+              void startSignIn('track')
+            }}
+            noValidate
+          >
+            <div className="lp-field" data-invalid={Boolean(fieldError) || undefined}>
               <input
+                ref={inputRef}
                 id="lp-bl"
                 name="bl"
-                value={blNo}
-                onChange={handleBlChange}
-                onFocus={() => setPaused(true)}
-                onBlur={() => setPaused(false)}
-                placeholder={`e.g. ${EXAMPLE_BL}`}
+                type="text"
+                value={billOfLading}
+                onChange={(event) => {
+                  setBillOfLading(event.target.value)
+                  setFieldError('')
+                }}
+                placeholder=" "
                 maxLength={40}
                 autoComplete="off"
-                spellCheck="false"
-                aria-describedby="lp-hint"
+                autoCapitalize="characters"
+                spellCheck={false}
+                readOnly={busy}
+                aria-invalid={Boolean(fieldError)}
+                aria-describedby="lp-bl-feedback"
               />
-              <button type="submit" className="lp-action" disabled={busy}>
-                {loading ? 'Checking…' : isSubmitting ? 'Opening Google…' : 'Track this B/L'}
-                <Icon icon="solar:arrow-right-linear" width="18" height="18" aria-hidden="true" />
-              </button>
+              <label htmlFor="lp-bl">Bill of lading number</label>
             </div>
-            <p id="lp-hint" className={`lp-hint ${hintTone}`} aria-live="polite">
-              {hint}
+
+            <p id="lp-bl-feedback" className="lp-field-feedback" aria-live="polite">
+              {fieldError ? <span className="lp-inline-error">{fieldError}</span> : fieldHint}
+            </p>
+
+            <div className="lp-actions">
+              <AuthButton type="submit" variant="track" pending={action === 'track'} disabled={disabled}>
+                Track this B/L
+                <Icon icon="solar:arrow-right-linear" width="18" height="18" aria-hidden="true" />
+              </AuthButton>
+              <AuthButton
+                type="button"
+                variant="google"
+                pending={action === 'google' || (!action && loading)}
+                disabled={disabled}
+                onClick={() => { void startSignIn('google') }}
+              >
+                <GoogleMark />
+                Continue with Google
+              </AuthButton>
+            </div>
+
+            <div className="lp-auth-note">
+              {authError || configError ? (
+                <p className="lp-inline-error" role="alert">
+                  {authError || 'Sign-in is temporarily unavailable.'}
+                </p>
+              ) : (
+                <p className="lp-auth-help">One Google account for new and returning users.</p>
+              )}
+            </div>
+            <p className="sr-only" role="status">
+              {action ? 'Connecting to Google.' : loading ? 'Checking your session.' : ''}
             </p>
           </form>
-        </div>
+        </section>
 
-        <p className="lp-quiet">
-          <span>B/L tracking for importers</span>
-          <a href="https://github.com/nishank23/shipmenttrack">Source on GitHub</a>
-          <span>© 2026</span>
-        </p>
+        <EtaUpdateDemo />
       </div>
     </main>
   )

@@ -7,7 +7,7 @@ function ProtectedRoute() {
 
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center px-6 text-sm text-slate-300">
+      <div className="st-screen-status st-screen-status--full" role="status">
         Checking your ShipTrack session...
       </div>
     )

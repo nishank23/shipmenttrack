@@ -4,18 +4,24 @@ export const carriers = [
   {
     code: 'MSC',
     label: 'MSC',
+    accent: '#ffcc00',
+    mark: 'msc.svg',
     prefixes: ['MEDU', 'MSDU', 'MSNU', 'MSMU', 'MSCU'],
     badge: 'bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-200',
   },
   {
     code: 'ONE',
     label: 'ONE',
+    accent: '#bd0f72',
+    mark: 'one.svg',
     prefixes: ['ONEY', 'BRDG'],
     badge: 'bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-200',
   },
   {
     code: 'EVERGREEN',
     label: 'Evergreen',
+    accent: '#008738',
+    mark: 'evergreen.svg',
     prefixes: ['EGLV', 'EGSU', 'EGHU'],
     badge:
       'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200',
@@ -51,4 +57,13 @@ export function getCarrierBadgeClass(code) {
 
 export function getCarrierLabel(code) {
   return findCarrier(code)?.label ?? (String(code ?? '').trim() || 'Unknown')
+}
+
+export function getCarrierBrand(code) {
+  const carrier = findCarrier(code)
+  return {
+    label: getCarrierLabel(code),
+    accent: carrier?.accent ?? 'var(--st-accent)',
+    logo: carrier?.mark ? `${import.meta.env?.BASE_URL ?? '/'}carrier-marks/${carrier.mark}` : '',
+  }
 }

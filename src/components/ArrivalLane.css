@@ -1,0 +1,405 @@
+.runway {
+  position: relative;
+  min-inline-size: 0;
+  padding: clamp(12px, 2vw, 22px);
+  border-radius: var(--st-radius-shell);
+  background-image: radial-gradient(ellipse at 64% 0%, var(--st-glow), transparent 68%);
+}
+
+.runway__head,
+.runway__foot,
+.runway__counts {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.runway__head {
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin-bottom: 14px;
+}
+
+.runway__head h2 {
+  color: var(--st-text);
+  font-size: clamp(20px, 2.2vw, 27px);
+  font-weight: 700;
+  line-height: 1.12;
+  letter-spacing: -0.045em;
+}
+
+.runway__head p {
+  margin-top: 4px;
+  color: var(--st-muted);
+  font-size: 13px;
+}
+
+.runway__counts {
+  gap: 6px 12px;
+  color: var(--st-muted);
+  font-size: 13px;
+}
+
+.runway__counts strong,
+.runway__unplaced strong {
+  color: var(--st-text);
+  font-weight: 750;
+}
+
+.runway__counts .runway__priority {
+  color: var(--st-warning);
+}
+
+.runway__priority strong {
+  color: inherit;
+}
+
+.runway__priority i,
+.runway__foot i {
+  display: inline-block;
+  inline-size: 6px;
+  block-size: 6px;
+  margin-inline-end: 3px;
+  border-radius: 50%;
+  background: var(--st-warning);
+  vertical-align: 2px;
+}
+
+.runway__display {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--st-hairline);
+  border-radius: var(--st-radius);
+  background: var(--st-field);
+}
+
+.runway__display[data-empty='true'] {
+  padding-bottom: 10px;
+}
+
+.runway__milestones {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  padding-block: 12px 0;
+}
+
+.runway__milestones::before {
+  position: absolute;
+  inset: auto 12.5% 4px;
+  block-size: 2px;
+  border-radius: 2px;
+  background: var(--st-accent);
+  box-shadow: 0 0 12px 1px var(--st-border-glow);
+  content: '';
+}
+
+.runway__milestones li {
+  position: relative;
+  display: grid;
+  grid-template-rows: 1fr auto;
+  align-items: end;
+  justify-items: center;
+  gap: 9px;
+  padding-inline: 2px;
+  color: var(--st-muted);
+  text-align: center;
+  font-size: clamp(11px, 1.15vw, 13px);
+  font-weight: 650;
+  line-height: 1.18;
+}
+
+.runway__milestones li[data-occupied='true'] {
+  color: var(--st-text);
+}
+
+.runway__milestones i {
+  inline-size: 10px;
+  block-size: 10px;
+  border: 2px solid var(--st-accent);
+  border-radius: 50%;
+  background: var(--st-field);
+}
+
+.runway__milestones li[data-occupied='true'] i {
+  background: var(--st-accent);
+  box-shadow: 0 0 9px var(--st-border-glow);
+}
+
+.runway__plot-window {
+  order: 1;
+  container-type: inline-size;
+  max-block-size: 194px;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.runway__plot {
+  position: relative;
+  background-image: radial-gradient(circle, var(--st-hairline) 0.8px, transparent 1px);
+  background-size: 12px 12px;
+}
+
+.runway__point {
+  position: absolute;
+  inset-block-start: 6px;
+  inline-size: min(112px, 23.5%);
+  translate: -50% 0;
+}
+
+.runway__marker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  inline-size: 100%;
+  min-inline-size: 0;
+  block-size: 40px;
+  padding-inline: 6px;
+  border: 1px solid var(--st-hairline);
+  border-radius: 7px;
+  background: var(--st-surface);
+  color: var(--st-text);
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: border-color 160ms, box-shadow 160ms, background-color 160ms;
+}
+
+.runway__marker:hover,
+.runway__marker[aria-expanded='true'] {
+  border-color: var(--st-border-glow);
+  background: var(--st-accent-wash);
+  box-shadow: 0 0 0 1px var(--st-glow);
+}
+
+.runway__marker-icon {
+  position: relative;
+  display: grid;
+  flex: 0 0 22px;
+  place-items: center;
+  block-size: 22px;
+  color: var(--st-accent);
+}
+
+.runway__marker[data-priority='true'] .runway__marker-icon {
+  color: var(--st-warning);
+}
+
+.runway__marker[data-priority='true'] .runway__marker-icon::before,
+.runway__marker[data-priority='true'] .runway__marker-icon::after {
+  position: absolute;
+  inset: 0;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  content: '';
+  pointer-events: none;
+}
+
+.runway__marker[data-priority='true'] .runway__marker-icon::before {
+  opacity: 0.45;
+}
+
+.runway__marker[data-priority='true'] .runway__marker-icon::after {
+  opacity: 0;
+}
+
+.runway[data-in-view='true'] .runway__marker[data-priority='true'] .runway__marker-icon::after {
+  animation: runway-radar 2.4s ease-out infinite;
+}
+
+@keyframes runway-radar {
+  0% { opacity: 0.7; transform: scale(0.86); }
+  72%, 100% { opacity: 0; transform: scale(1.52); }
+}
+
+.runway__marker-label {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runway__unplaced {
+  display: grid;
+  order: 3;
+  gap: 7px;
+  margin-top: 8px;
+  padding: 9px 10px;
+  border-top: 1px dashed var(--st-hairline);
+}
+
+.runway__unplaced p,
+.runway__foot {
+  color: var(--st-muted);
+  font-size: 12px;
+}
+
+.runway__unplaced-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  max-block-size: 142px;
+  padding: 3px;
+  overflow: auto;
+}
+
+.runway__unplaced-items > div {
+  min-inline-size: 0;
+  max-inline-size: min(180px, 100%);
+}
+
+.runway__unplaced-items .runway__marker {
+  padding-inline: 8px;
+}
+
+.runway__foot {
+  justify-content: space-between;
+  gap: 4px 12px;
+  margin-top: 9px;
+}
+
+.runway__preview-slot {
+  --runway-preview-width: min(330px, calc(100% - 12px));
+  position: relative;
+  z-index: 6;
+  order: 4;
+}
+
+.runway__preview-slot[data-plotted='true'] {
+  order: 2;
+}
+
+.runway__preview {
+  position: absolute;
+  inset-block-start: 2px;
+  inset-inline-start: clamp(6px, calc(var(--runway-preview-position) - var(--runway-preview-width) / 2), calc(100% - var(--runway-preview-width) - 6px));
+  inline-size: var(--runway-preview-width);
+  overflow-wrap: anywhere;
+  padding: 12px;
+  border-color: var(--st-border-glow);
+  box-shadow: 0 16px 36px var(--st-shadow-deep), 0 4px 12px var(--st-shadow);
+}
+
+.runway__preview-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.runway__carrier {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.runway__preview h3 {
+  margin-top: 5px;
+  font-size: 18px;
+  font-weight: 750;
+  line-height: 1.2;
+  letter-spacing: -0.025em;
+}
+
+.runway__preview-head p,
+.runway__preview dt,
+.runway__detail-meta {
+  color: var(--st-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.runway__preview-data {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--st-hairline);
+}
+
+.runway__preview dt {
+  margin-bottom: 3px;
+}
+
+.runway__preview dd:not(.runway__detail-meta) {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.runway__preview dd[data-overdue='true'] {
+  color: var(--st-danger);
+}
+
+.runway__detail-meta {
+  margin-top: 2px;
+}
+
+.runway__close,
+.runway__details-link {
+  display: inline-flex;
+  min-block-size: 40px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.runway__close {
+  flex: 0 0 40px;
+  color: var(--st-muted);
+}
+
+.runway__details-link {
+  gap: 7px;
+  margin-top: 7px;
+  padding-inline: 6px;
+  color: var(--st-accent);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.runway__close:hover,
+.runway__details-link:hover {
+  background: var(--st-accent-wash);
+}
+
+@container (max-width: 480px) {
+  .runway__point .runway__marker {
+    flex-direction: column;
+    gap: 0;
+    padding-inline: 2px;
+    font-size: 11px;
+    line-height: 1.1;
+  }
+
+  .runway__point .runway__marker-icon {
+    flex-basis: 20px;
+  }
+}
+
+@media (max-width: 600px) {
+  .runway__preview-slot {
+    padding: 4px 7px 8px;
+  }
+
+  .runway__preview {
+    position: relative;
+    inset: auto;
+    inline-size: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .runway[data-in-view='true'] .runway__marker[data-priority='true'] .runway__marker-icon::after {
+    animation: none;
+  }
+
+  .runway__marker {
+    transition: none;
+  }
+}

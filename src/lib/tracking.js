@@ -1,5 +1,6 @@
 import { httpsCallable } from 'firebase/functions'
-import { functions } from '../../firebase'
+import { doc, onSnapshot } from 'firebase/firestore'
+import { db, functions } from '../../firebase'
 import { carriers } from './carriers'
 
 const liveCarrierCodes = new Set(carriers.map((carrier) => carrier.code))
@@ -21,6 +22,12 @@ export async function lookupTracking({ blNo, carrier, shipmentId }) {
   const callable = httpsCallable(functions, 'lookupTracking', { timeout: 130000 })
   const result = await callable({ blNo, carrier, shipmentId })
   return result.data
+}
+
+export function subscribeShipmentTracking(shipmentId, onData, onError) {
+  return onSnapshot(doc(db, 'tracking_cache', shipmentId), (snapshot) => {
+    onData(snapshot.exists() ? snapshot.data() : null)
+  }, onError)
 }
 
 /**

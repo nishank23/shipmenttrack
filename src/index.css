@@ -1,330 +1,112 @@
 @import "tailwindcss";
 
+/* The upstream Albert Sans 1.3 build includes tabular figures. */
+@font-face {
+  font-family: 'Albert Sans';
+  src: url('./assets/albert-sans.woff') format('woff');
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
 :root {
-  color: #1f3038;
-  background-color: #f7f9fa;
-  font-family: 'Albert Sans', 'Segoe UI', sans-serif;
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  color-scheme: light;
+  --st-font: 'Albert Sans', 'Segoe UI', sans-serif;
+  --st-canvas: #f5f7fa;
+  --st-surface: #fff;
+  --st-inset: #e9edf3;
+  --st-field: #fcfdff;
+  --st-glass: rgba(255, 255, 255, 0.78);
+  --st-text: #141c2b;
+  --st-muted: #515d70;
+  --st-hairline: rgba(21, 36, 58, 0.13);
+  --st-field-border: #7b899d;
+  --st-accent: #245cc5;
+  --st-accent-hover: #194ca9;
+  --st-accent-ink: #fff;
+  --st-accent-wash: #e7efff;
+  --st-focus: #225fcf;
+  --st-border-glow: rgba(36, 92, 197, 0.34);
+  --st-danger: #b32648;
+  --st-danger-wash: #fff0f3;
+  --st-warning: #8c5200;
+  --st-glow: rgba(36, 92, 197, 0.07);
+  --st-shadow: rgba(16, 28, 49, 0.07);
+  --st-shadow-deep: rgba(16, 28, 49, 0.09);
+  --st-highlight: rgba(255, 255, 255, 0.78);
+  --st-radius: 8px;
+  --st-radius-shell: 14px;
+  --st-content: 76rem;
+  --st-gutter: clamp(16px, 3vw, 36px);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    color: #dbeafe;
-    background-color: #06101f;
+    color-scheme: dark;
+    --st-canvas: #0f1115;
+    --st-surface: #171a20;
+    --st-inset: #222730;
+    --st-field: #14171d;
+    --st-glass: rgba(23, 26, 32, 0.8);
+    --st-text: #eef1f6;
+    --st-muted: #a7b2c4;
+    --st-hairline: rgba(224, 234, 251, 0.11);
+    --st-field-border: #5f6e84;
+    --st-accent: #8bb9ff;
+    --st-accent-hover: #aacbff;
+    --st-accent-ink: #0c1930;
+    --st-accent-wash: #1b2b46;
+    --st-focus: #8bb9ff;
+    --st-border-glow: rgba(139, 185, 255, 0.36);
+    --st-danger: #ff97ad;
+    --st-danger-wash: #311e28;
+    --st-warning: #f6c878;
+    --st-glow: rgba(91, 145, 233, 0.07);
+    --st-shadow: rgba(0, 0, 0, 0.24);
+    --st-shadow-deep: rgba(0, 0, 0, 0.34);
+    --st-highlight: rgba(255, 255, 255, 0.045);
   }
 }
 
-* {
-  box-sizing: border-box;
-}
+@layer base {
+  html {
+    background-color: var(--st-canvas);
+    color: var(--st-text);
+    font-family: var(--st-font);
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
 
-html {
-  scroll-behavior: smooth;
-}
-
-/* Flat ground: surfaces are separated by tone steps, not gradients. */
-body {
-  margin: 0;
-  min-height: 100vh;
-  background: #f7f9fa;
-}
-
-@media (prefers-color-scheme: dark) {
   body {
-    background: #06101f;
+    margin: 0;
+    min-block-size: 100dvh;
+    background-color: var(--st-canvas);
   }
-}
 
-body,
-button,
-input,
-textarea,
-select {
-  font: inherit;
-}
-
-a {
-  color: inherit;
-}
-
-#root {
-  min-height: 100vh;
-}
-
-input,
-textarea,
-select {
-  color-scheme: light;
-}
-
-@media (prefers-color-scheme: dark) {
+  body,
+  button,
   input,
   textarea,
   select {
-    color-scheme: dark;
-  }
-}
-
-.app-shell {
-  isolation: isolate;
-  position: relative;
-}
-
-.app-motion-card {
-  animation: appRise 520ms ease-out both;
-}
-
-@keyframes appRise {
-  from {
-    opacity: 0;
-    transform: translateY(16px) scale(0.985);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .app-motion-card {
-    animation: none;
-  }
-}
-
-/* ---------- Arrival lane (shared by landing and dashboard) ---------- */
-
-.lane {
-  --lane-ink: #1f3038;
-  --lane-soft: #64748b;
-  --lane-faint: #e2e8f0;
-  --lane-accent: #0d7480;
-  --lane-card: #1f3038;
-  --lane-card-ink: #f8fafc;
-  --lane-hover: #f1f5f9;
-  --lane-overdue: #c2304a;
-  --lane-week: #b86e00;
-  --lane-fortnight: #0d7480;
-  --lane-later: #8a989e;
-  min-width: 0;
-}
-
-@media (prefers-color-scheme: dark) {
-  .lane {
-    --lane-ink: #e2e8f0;
-    --lane-soft: #94a3b8;
-    --lane-faint: rgba(255, 255, 255, 0.08);
-    --lane-accent: #5eead4;
-    --lane-card: #e2e8f0;
-    --lane-card-ink: #06101f;
-    --lane-hover: rgba(255, 255, 255, 0.08);
-    --lane-overdue: #fb7185;
-    --lane-week: #fbbf24;
-    --lane-fortnight: #5eead4;
-    --lane-later: #64748b;
-  }
-}
-
-.lane-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 4px 16px;
-}
-
-.lane-title {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--lane-ink);
-}
-
-.lane-caption {
-  margin: 0;
-  font-size: 13px;
-  color: var(--lane-soft);
-}
-
-.lane-track {
-  position: relative;
-  margin-top: 12px;
-  min-width: 0;
-}
-
-.lane-grid {
-  position: absolute;
-  top: 0;
-  bottom: 24px;
-  width: 1px;
-  background: var(--lane-faint);
-}
-
-.lane-axis {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 24px;
-  height: 1px;
-  background: var(--lane-faint);
-}
-
-.lane-today {
-  position: absolute;
-  top: 0;
-  bottom: 24px;
-  width: 2px;
-  margin-left: -1px;
-  border-radius: 2px;
-  background: var(--lane-accent);
-}
-
-.lane-item {
-  position: absolute;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  translate: -50% 0;
-  color: var(--lane-ink);
-  text-decoration: none;
-  outline: none;
-  cursor: pointer;
-}
-
-.lane-label {
-  max-width: 16ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  padding: 1px 6px;
-  border-radius: 4px;
-  font-size: 13px;
-  font-weight: 500;
-  line-height: 1.4;
-  transition: background-color 200ms ease, color 200ms ease;
-}
-
-.lane-dot {
-  display: inline-block;
-  width: 10px;
-  height: 10px;
-  margin-top: 2px;
-  border-radius: 999px;
-  transition: transform 300ms cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.lane-dot.is-overdue {
-  background: var(--lane-overdue);
-}
-
-.lane-dot.is-week {
-  background: var(--lane-week);
-}
-
-.lane-dot.is-fortnight {
-  background: var(--lane-fortnight);
-}
-
-.lane-dot.is-later {
-  background: var(--lane-later);
-}
-
-.lane-item:hover .lane-label,
-.lane-item.is-active .lane-label {
-  background: var(--lane-hover);
-}
-
-.lane-item:hover .lane-dot,
-.lane-item.is-active .lane-dot {
-  transform: scale(1.5);
-}
-
-.lane-item:focus-visible .lane-label {
-  outline: 2px solid var(--lane-accent);
-  outline-offset: 1px;
-}
-
-.lane-card {
-  position: absolute;
-  width: 240px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: var(--lane-card);
-  color: var(--lane-card-ink);
-  font-size: 13px;
-  line-height: 1.5;
-  pointer-events: none;
-  box-shadow: 0 10px 30px rgba(2, 6, 23, 0.25);
-  animation: laneCardIn 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
-  overflow-wrap: anywhere;
-}
-
-.lane-card p {
-  margin: 0;
-}
-
-.lane-card-title {
-  font-weight: 700;
-  margin-bottom: 2px !important;
-}
-
-@keyframes laneCardIn {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-.lane-tick {
-  position: absolute;
-  bottom: 0;
-  white-space: nowrap;
-  font-size: 13px;
-  font-variant-numeric: tabular-nums;
-  color: var(--lane-soft);
-}
-
-.lane-tick.is-today {
-  font-weight: 700;
-  color: var(--lane-accent);
-}
-
-.lane-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 16px;
-  margin: 10px 0 0;
-  padding: 0;
-  list-style: none;
-  font-size: 13px;
-  color: var(--lane-soft);
-}
-
-.lane-legend li {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.lane-legend .lane-dot {
-  width: 8px;
-  height: 8px;
-  margin: 0;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .lane-card {
-    animation: none;
+    font-variant-numeric: tabular-nums;
   }
 
-  .lane-dot,
-  .lane-label {
-    transition: none;
+  button,
+  input,
+  textarea,
+  select {
+    font-family: inherit;
+    color-scheme: inherit;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--st-focus);
+    outline-offset: 2px;
+  }
+
+  #root {
+    min-block-size: 100dvh;
   }
 }

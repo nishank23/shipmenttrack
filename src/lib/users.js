@@ -1,6 +1,15 @@
 import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore'
 import { db } from '../../firebase'
 
+export async function readUserSettings(uid) {
+  const snapshot = await getDoc(doc(db, 'users', uid))
+  return snapshot.exists() ? snapshot.data() : {}
+}
+
+export function saveUserSettings(uid, values) {
+  return setDoc(doc(db, 'users', uid), { ...values, updatedAt: serverTimestamp() }, { merge: true })
+}
+
 export async function ensureUserDocument(user) {
   if (!user?.uid) {
     return

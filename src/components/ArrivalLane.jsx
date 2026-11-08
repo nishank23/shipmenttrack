@@ -1,235 +1,304 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
+import { motion as Motion, useInView, useReducedMotion } from 'motion/react'
 import { Link } from 'react-router-dom'
-import { gsap, prefersReducedMotion } from '../lib/motion'
+import { getRunwayEta, getRunwayMilestone, isActualRunwayEvent, runwayMilestones } from '../lib/arrivalRunway'
+import { getCarrierBadgeClass, getCarrierLabel } from '../lib/carriers'
+import { standardSpring } from '../lib/motion'
+import './ArrivalLane.css'
 
-const DAY_MS = 86400000
+const ROW_HEIGHT = 46
+const still = { duration: 0 }
+const dateFormat = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium' })
+const timeFormat = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short' })
 
-const shortDate = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' })
+// Inset the rail half a column at both ends so endpoint markers fit on phones.
+const railPosition = (progress) => `${12.5 + progress * 0.75}%`
 
-const bucketStyles = {
-  overdue: { dot: 'is-overdue', label: 'Past ETA' },
-  week: { dot: 'is-week', label: 'Within 7 days' },
-  fortnight: { dot: 'is-fortnight', label: '8–14 days' },
-  later: { dot: 'is-later', label: 'Later' },
-}
-
-/**
- * Greedy label rows: a label moves up a row when it would overlap the
- * previous label in the same row. Widths are estimated from character count.
- */
-function assignRows(items, widthPx) {
-  const rowEnds = []
-
-  return items.map((item) => {
-    const x = (item.left / 100) * widthPx
-    const width = item.label.length * 7.5 + 16
-    // Mirror the edge anchoring used when rendering.
-    const start = item.left < 8 ? x - 5 : item.left > 92 ? x - width + 5 : x - width / 2
-    const end = start + width
-    let row = rowEnds.findIndex((rowEnd) => start > rowEnd + 6)
-
-    if (row === -1) {
-      row = rowEnds.length
-      rowEnds.push(end)
-    } else {
-      rowEnds[row] = end
-    }
-
-    return { ...item, row: Math.min(row, 3) }
-  })
-}
-
-/**
- * Every shipment's ETA on one strip around today.
- * shipments: [{ id, label, daysLeft, bucket, href?, lines?: string[] }]
- */
-function ArrivalLane({ shipments, from = -21, to = 35, title = 'Arrival lane', caption, compact = false }) {
-  const rootRef = useRef(null)
-  const trackRef = useRef(null)
-  const [trackWidth, setTrackWidth] = useState(900)
-  const [activeId, setActiveId] = useState('')
-  const span = to - from
-  const todayLeft = ((0 - from) / span) * 100
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-
-  // Weekly ticks; fortnightly on narrow lanes so dates never collide.
-  const tickStep = trackWidth < 520 ? 14 : 7
-  const ticks = []
-  for (let day = from; day <= to; day += 7) {
-    if (day % tickStep === 0 || day === from || (day === to && tickStep === 7)) ticks.push(day)
-  }
-  const gridDays = []
-  for (let day = from; day <= to; day += 7) gridDays.push(day)
-
-  const items = useMemo(() => {
-    const placed = shipments
-      .filter((shipment) => shipment.daysLeft !== null && shipment.daysLeft !== undefined)
-      .sort((left, right) => left.daysLeft - right.daysLeft)
-      .map((shipment) => ({
-        ...shipment,
-        left: ((Math.min(Math.max(shipment.daysLeft, from), to) - from) / span) * 100,
-        clippedLeft: shipment.daysLeft < from,
-        clippedRight: shipment.daysLeft > to,
-      }))
-
-    return assignRows(placed, trackWidth)
-  }, [shipments, from, to, span, trackWidth])
-
-  const dataKey = items.map((item) => `${item.id}:${item.daysLeft}`).join('|')
-
-  // Keep label rows correct as the lane resizes.
-  useLayoutEffect(() => {
-    const track = trackRef.current
-    if (!track || typeof ResizeObserver === 'undefined') return undefined
-
-    const observer = new ResizeObserver(([entry]) => {
-      setTrackWidth(Math.round(entry.contentRect.width))
-    })
-    observer.observe(track)
-    return () => observer.disconnect()
-  }, [])
-
-  // Entrance: today line draws, then each shipment glides out from today to its date.
-  useLayoutEffect(() => {
-    const root = rootRef.current
-    if (!root || prefersReducedMotion()) return undefined
-
-    const ctx = gsap.context(() => {
-      const timeline = gsap.timeline({ defaults: { ease: 'expo.out' } })
-      timeline
-        .from('[data-lane-today]', { scaleY: 0, transformOrigin: 'bottom', duration: 0.9 })
-        .from('[data-lane-tick]', { opacity: 0, y: 6, stagger: 0.03, duration: 0.6 }, 0.1)
-
-      root.querySelectorAll('[data-lane-item]').forEach((node, index) => {
-        const offset = ((todayLeft - Number(node.dataset.left)) / 100) * trackWidth
-        timeline.from(
-          node,
-          { x: offset, opacity: 0, duration: 1.4, ease: 'expo.out' },
-          0.25 + index * 0.08,
-        )
-      })
-    }, root)
-
-    return () => ctx.revert()
-    // Re-run only when the plotted shipments change, not on every resize.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataKey])
-
-  const usedBuckets = Array.from(new Set(items.map((item) => item.bucket)))
-  const rows = Math.max(1, ...items.map((item) => item.row + 1))
-  const laneHeight = (compact ? 22 : 26) * rows + 34
+function ShipmentMarker({ item, active, previewId, onPreview, onSelect }) {
+  const urgencyLabel = item.milestone?.id === 'out-for-delivery' ? '' : item.priority
+  const label = [item.invoiceNo, item.milestone?.label ?? 'Milestone not reported', urgencyLabel]
+    .filter(Boolean).join(', ')
 
   return (
-    <section ref={rootRef} aria-label={title} className="lane">
-      <div className="lane-head">
-        <h2 className="lane-title">{title}</h2>
-        {caption ? <p className="lane-caption">{caption}</p> : null}
-      </div>
+    <button
+      type="button"
+      className="runway__marker"
+      data-runway-marker={item.id}
+      data-priority={Boolean(item.priority)}
+      aria-label={label}
+      aria-expanded={active}
+      aria-controls={active ? previewId : undefined}
+      onPointerEnter={(event) => {
+        if (event.pointerType === 'mouse') onPreview(item.id)
+      }}
+      onFocus={(event) => {
+        if (event.currentTarget.matches(':focus-visible')) onPreview(item.id)
+      }}
+      onClick={(event) => onSelect(item.id, event.detail === 0)}
+    >
+      <span className="runway__marker-icon" aria-hidden="true">
+        <svg viewBox="0 0 20 20" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round">
+          <rect x="2.5" y="5" width="15" height="10" rx="1.4" />
+          <path d="M6.5 8v4m3.5-4v4m3.5-4v4" />
+        </svg>
+      </span>
+      <span className="runway__marker-label">{item.invoiceNo}</span>
+    </button>
+  )
+}
 
-      <div ref={trackRef} className="lane-track" style={{ height: `${laneHeight + 24}px` }}>
-        {gridDays.map((tick) => (
-          <span
-            key={`grid-${tick}`}
-            className="lane-grid"
-            style={{ left: `${((tick - from) / span) * 100}%` }}
-            aria-hidden="true"
-          />
-        ))}
+function ShipmentPreview({ item, lastEvent, id, detailsRef, pinned, reducedMotion, onClose }) {
+  const arrived = item.milestone?.id === 'arriving'
+  return (
+    <div
+      className="runway__preview-slot"
+      data-plotted={Boolean(item.milestone)}
+      style={{ '--runway-preview-position': item.milestone ? railPosition(item.milestone.progress) : '50%' }}
+    >
+      <Motion.div
+        id={id}
+        role="region"
+        aria-label={`Shipment ${item.invoiceNo} preview`}
+        className="runway__preview glass-surface"
+        initial={reducedMotion ? false : { opacity: 0, y: -5, scale: 0.985 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={reducedMotion ? still : { ...standardSpring, opacity: { duration: 0.14 } }}
+      >
+        <div className="runway__preview-head">
+          <div>
+            <span className={`runway__carrier ${getCarrierBadgeClass(item.carrier)}`}>{getCarrierLabel(item.carrier)}</span>
+            <h3>{item.invoiceNo}</h3>
+            <p>{item.blNo}</p>
+          </div>
+          <button type="button" className="runway__close" aria-label="Close shipment preview" onClick={onClose}>
+            <svg viewBox="0 0 20 20" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+              <path d="m5 5 10 10M15 5 5 15" />
+            </svg>
+          </button>
+        </div>
+        <dl className="runway__preview-data">
+          <div>
+            <dt>Estimated arrival</dt>
+            <dd data-overdue={item.etaState.overdue && !arrived}>
+              {arrived ? 'Arrival reported' : item.etaState.label}
+            </dd>
+            {item.eta && (
+              <dd className="runway__detail-meta">
+                <time dateTime={item.eta.toISOString()}>{(item.etaHasTime ? timeFormat : dateFormat).format(item.eta)}</time>
+              </dd>
+            )}
+          </div>
+          <div>
+            <dt>Last known location</dt>
+            <dd>{lastEvent?.location || 'Not reported'}</dd>
+            {lastEvent && <dd className="runway__detail-meta">{lastEvent.title}</dd>}
+          </div>
+        </dl>
+        {pinned && (
+          <Link ref={detailsRef} to={`/shipments/${item.id}`} className="runway__details-link">
+            View shipment
+            <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+              <path d="M3 10h13m-5-5 5 5-5 5" />
+            </svg>
+          </Link>
+        )}
+      </Motion.div>
+    </div>
+  )
+}
 
-        <span className="lane-axis" aria-hidden="true" />
-        <span data-lane-today className="lane-today" style={{ left: `${todayLeft}%` }} aria-hidden="true" />
+function ArrivalLane({ shipments }) {
+  const rootRef = useRef(null)
+  const detailsRef = useRef(null)
+  const skipFocusPreview = useRef(false)
+  const focusDetails = useRef(false)
+  const headingId = useId()
+  const previewId = useId()
+  const reducedMotion = useReducedMotion()
+  const inView = useInView(rootRef)
+  const [now, setNow] = useState(Date.now)
+  const [peekId, setPeekId] = useState(null)
+  const [pinnedId, setPinnedId] = useState(null)
+  const hasEta = shipments.some((shipment) => shipment.eta)
 
-        {items.map((item) => {
-          const style = bucketStyles[item.bucket] ?? bucketStyles.later
-          const isActive = activeId === item.id
-          const label = `${item.clippedLeft ? '‹ ' : ''}${item.label}${item.clippedRight ? ' ›' : ''}`
-          const content = (
-            <>
-              <span className="lane-label">{label}</span>
-              <span className={`lane-dot ${style.dot}`} />
-            </>
-          )
-          const commonProps = {
-            'data-lane-item': true,
-            'data-left': item.left,
-            className: `lane-item ${isActive ? 'is-active' : ''}`,
-            style: {
-              left: `${item.left}%`,
-              bottom: `${24 + 8 + item.row * (compact ? 22 : 26)}px`,
-              zIndex: isActive ? 5 : 1,
-              // Near an edge the label hangs inward; the dot stays on its date.
-              ...(item.left < 8
-                ? { alignItems: 'flex-start', translate: '-5px 0' }
-                : item.left > 92
-                  ? { alignItems: 'flex-end', translate: 'calc(-100% + 5px) 0' }
-                  : null),
-            },
-            onMouseEnter: () => setActiveId(item.id),
-            onMouseLeave: () => setActiveId(''),
-            onFocus: () => setActiveId(item.id),
-            onBlur: () => setActiveId(''),
-            'aria-label': [item.label, ...(item.lines ?? [])].join(', '),
+  useEffect(() => {
+    if (!hasEta) return undefined
+    const refresh = () => {
+      if (!document.hidden) setNow(Date.now())
+    }
+    const timer = window.setInterval(refresh, 15000)
+    document.addEventListener('visibilitychange', refresh)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', refresh)
+    }
+  }, [hasEta])
+
+  const rows = new Map()
+  const items = shipments.map((shipment) => {
+    const milestone = getRunwayMilestone(shipment.latestEvent, now)
+    const etaState = getRunwayEta(shipment.eta, now, shipment.etaHasTime)
+    const row = milestone ? rows.get(milestone.id) ?? 0 : 0
+    if (milestone) rows.set(milestone.id, row + 1)
+    const priority = milestone?.id === 'out-for-delivery'
+      ? 'Out for delivery'
+      : etaState.dueSoon && milestone?.id !== 'arriving'
+        ? (shipment.etaHasTime ? 'Due within 24 hours' : 'Due today')
+        : ''
+    return { ...shipment, milestone, etaState, row, priority }
+  })
+
+  const plotted = items.filter((item) => item.milestone)
+  const unplaced = items.filter((item) => !item.milestone)
+  const active = items.find(({ id }) => id === pinnedId)
+    ?? items.find(({ id }) => id === peekId)
+  const activeId = active?.id
+  const isPinned = Boolean(active && active.id === pinnedId)
+  const lastEvent = isActualRunwayEvent(active?.latestEvent, now) ? active.latestEvent : null
+  const priorityCount = items.filter((item) => item.priority).length
+  const rowCount = Math.max(0, ...rows.values())
+
+  function dismiss() {
+    setPinnedId(null)
+    setPeekId(null)
+  }
+
+  function restoreMarkerFocus(id) {
+    const trigger = [...(rootRef.current?.querySelectorAll('[data-runway-marker]') ?? [])]
+      .find((node) => node.dataset.runwayMarker === id)
+    skipFocusPreview.current = true
+    trigger?.focus({ preventScroll: true })
+    skipFocusPreview.current = false
+  }
+
+  useEffect(() => {
+    if (!activeId) return undefined
+    const onOutside = (event) => {
+      if (!rootRef.current?.contains(event.target)) dismiss()
+    }
+    const onEscape = (event) => {
+      if (event.key !== 'Escape') return
+      if (rootRef.current?.contains(document.activeElement)) restoreMarkerFocus(activeId)
+      dismiss()
+    }
+    document.addEventListener('pointerdown', onOutside)
+    document.addEventListener('keydown', onEscape)
+    return () => {
+      document.removeEventListener('pointerdown', onOutside)
+      document.removeEventListener('keydown', onEscape)
+    }
+  }, [activeId])
+
+  useEffect(() => {
+    if (isPinned && focusDetails.current) {
+      detailsRef.current?.focus({ preventScroll: true })
+      focusDetails.current = false
+    }
+  }, [isPinned, pinnedId])
+
+  function marker(item) {
+    return (
+      <ShipmentMarker
+        item={item}
+        active={active?.id === item.id}
+        previewId={previewId}
+        onPreview={(id) => {
+          if (!skipFocusPreview.current) setPeekId(id)
+        }}
+        onSelect={(id, viaKeyboard) => {
+          if (pinnedId === id) {
+            dismiss()
+            return
           }
+          focusDetails.current = viaKeyboard
+          setPinnedId(id)
+          setPeekId(null)
+        }}
+      />
+    )
+  }
 
-          return (
-            <div key={item.id}>
-              {item.href ? (
-                <Link to={item.href} {...commonProps}>
-                  {content}
-                </Link>
-              ) : (
-                <span tabIndex={0} {...commonProps}>
-                  {content}
-                </span>
-              )}
-              {isActive && item.lines?.length ? (
-                <div
-                  role="tooltip"
-                  className="lane-card"
-                  style={{
-                    left: `clamp(0px, calc(${item.left}% - 120px), calc(100% - 240px))`,
-                    bottom: `${24 + 8 + item.row * (compact ? 22 : 26) + 40}px`,
-                  }}
+  return (
+    <section
+      ref={rootRef}
+      className="runway surface-raised"
+      aria-labelledby={headingId}
+      data-in-view={inView}
+      onPointerLeave={(event) => {
+        if (event.pointerType === 'mouse' && !rootRef.current?.contains(document.activeElement)) {
+          setPeekId(null)
+        }
+      }}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setPeekId(null)
+      }}
+    >
+      <header className="runway__head">
+        <div>
+          <h2 id={headingId}>Arrival Runway</h2>
+          <p>Shipment progress from carrier milestones</p>
+        </div>
+        <div className="runway__counts">
+          <span><strong>{shipments.length}</strong> active</span>
+          {priorityCount > 0 && <span className="runway__priority"><i aria-hidden="true" /> <strong>{priorityCount}</strong> priority</span>}
+        </div>
+      </header>
+
+      <div className="runway__display" data-empty={items.length === 0}>
+        <ol className="runway__milestones" aria-label="Shipment milestones">
+          {runwayMilestones.map((milestone) => (
+            <li key={milestone.id} data-occupied={rows.has(milestone.id)}>
+              <span>{milestone.label}</span>
+              <i aria-hidden="true" />
+            </li>
+          ))}
+        </ol>
+        {plotted.length > 0 && (
+          <div className="runway__plot-window">
+            <div className="runway__plot" style={{ height: rowCount * ROW_HEIGHT + 9 }}>
+              {plotted.map((item) => (
+                <Motion.div
+                  key={item.id}
+                  className="runway__point"
+                  initial={false}
+                  animate={{ left: railPosition(item.milestone.progress), y: item.row * ROW_HEIGHT }}
+                  transition={reducedMotion ? still : standardSpring}
                 >
-                  <p className="lane-card-title">{item.label}</p>
-                  {item.lines.map((line) => (
-                    <p key={line}>{line}</p>
-                  ))}
-                </div>
-              ) : null}
+                  {marker(item)}
+                </Motion.div>
+              ))}
             </div>
-          )
-        })}
-
-        {ticks.map((tick, index) => (
-          <span
-            key={tick}
-            data-lane-tick
-            className={`lane-tick ${tick === 0 ? 'is-today' : ''}`}
-            style={{
-              left: `${((tick - from) / span) * 100}%`,
-              // `translate` (not transform) so GSAP's y offset never fights it.
-              translate: index === 0 ? '0 0' : index === ticks.length - 1 ? '-100% 0' : '-50% 0',
+          </div>
+        )}
+        {unplaced.length > 0 && (
+          <div className="runway__unplaced">
+            <p><strong>{unplaced.length}</strong> without a reported milestone</p>
+            <div className="runway__unplaced-items">
+              {unplaced.map((item) => <div key={item.id}>{marker(item)}</div>)}
+            </div>
+          </div>
+        )}
+        {active && (
+          <ShipmentPreview
+            key={active.id}
+            item={active}
+            lastEvent={lastEvent}
+            id={previewId}
+            detailsRef={detailsRef}
+            pinned={isPinned}
+            reducedMotion={reducedMotion}
+            onClose={() => {
+              restoreMarkerFocus(active.id)
+              dismiss()
             }}
-          >
-            {tick === 0 ? 'Today' : shortDate.format(new Date(today.getTime() + tick * DAY_MS))}
-          </span>
-        ))}
+          />
+        )}
       </div>
 
-      {usedBuckets.length > 1 ? (
-        <ul className="lane-legend" aria-label="Legend">
-          {Object.entries(bucketStyles)
-            .filter(([key]) => usedBuckets.includes(key))
-            .map(([key, value]) => (
-              <li key={key}>
-                <span className={`lane-dot ${value.dot}`} aria-hidden="true" />
-                {value.label}
-              </li>
-            ))}
-        </ul>
-      ) : null}
+      <div className="runway__foot">
+        <span>{items.length ? 'Select a shipment for details' : 'Track a shipment to see carrier updates here.'}</span>
+        {priorityCount > 0 && <span><i aria-hidden="true" /> Out for delivery or ETA soon</span>}
+      </div>
     </section>
   )
 }

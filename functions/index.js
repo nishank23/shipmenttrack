@@ -12,6 +12,7 @@ import {
   extractPilContainerTracking,
   mergeTrackingResults,
 } from './lib/trackingExtractors.js'
+import { getShipmentNotificationKind } from './lib/notificationPreferences.js'
 
 initializeApp();
 
@@ -565,29 +566,10 @@ async function processUserShipments(userDoc, { forceRefresh, sendEmails, transpo
 
     allProcessedShipments.push(shipment)
 
-    // Import finished (empty container returned): no more alerts.
-    if (shipment.archived) {
-      continue
-    }
-
-    /**
-     * PRIORITY 1:
-     * ETA changed email
-     */
-    if (shipment.etaChanged) {
+    const notification = getShipmentNotificationKind(shipment, user, alertDays)
+    if (notification === 'eta-update') {
       etaChangedShipments.push(shipment)
-      continue
-    }
-
-    /**
-     * PRIORITY 2:
-     * Normal reminder email
-     */
-    if (
-      shipment.daysRemaining !== null &&
-      shipment.daysRemaining >= 0 &&
-      shipment.daysRemaining <= alertDays
-    ) {
+    } else if (notification === 'arrival-reminder') {
       reminderShipments.push(shipment)
     }
   }
