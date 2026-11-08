@@ -2,9 +2,24 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Link, Navigate } from 'react-router-dom'
 import { Icon } from '@iconify/react'
 import useAuth from '../hooks/useAuth'
+import VoyageGlobe from '../components/VoyageGlobe'
 import { detectCarrierFromBlNumber, getCarrierLabel } from '../lib/carriers'
-import containerPhoto from '../assets/amber-cargo.webp'
+import { gsap, prefersReducedMotion, useSmoothScroll } from '../lib/scrollMotion'
 import '../landing.css'
+
+// One real voyage ShipTrack recorded: B/L MEDUKU648102 (MSC, invoice 547-GVCS).
+const STOPS = [
+  { name: 'Surabaya', lat: -7.2, lon: 112.73 },
+  { name: 'Port Elizabeth', lat: -33.86, lon: 25.65 },
+  { name: 'Maputo', lat: -25.97, lon: 32.57 },
+]
+const GLOBE_FOCUS = { lat: -24, lon: 66 }
+const EVENTS = [
+  { title: 'Export loaded on vessel', place: 'Surabaya, Indonesia', date: 'Aug 29' },
+  { title: 'Transshipment discharged', place: 'Port Elizabeth, South Africa', date: 'Oct 14' },
+  { title: 'Transshipment loaded', place: 'Port Elizabeth, South Africa', date: 'Nov 2' },
+  { title: 'Arrives at Maputo', place: 'Maputo, Mozambique', date: 'ETA Nov 13' },
+]
 
 const PENDING_BL_KEY = 'shiptrack:pendingBl'
 
@@ -78,49 +93,44 @@ function AuthButton({ type, variant, pending, disabled, onClick, children }) {
 }
 
 /**
- * Opening move: the words settle, the photo strip opens from its centre and
- * the picture keeps a slow drift. GSAP loads on demand; without it, or under
- * reduced motion, the page is already in its final state.
+ * Hero choreography: the headline rises word by word, then the copy and form;
+ * the globe fades in and the voyage plays on a loop that drives both the
+ * route on the globe (progress) and the event card (step).
  */
-function useEntrance(scope) {
+function useVoyage(scope, progress, setStep) {
   useLayoutEffect(() => {
     const root = scope.current
-    if (!root || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return undefined
+    if (!root) return undefined
 
-    let ctx
-    let cancelled = false
-
-    import('gsap')
-      .then(({ default: gsap }) => {
-        if (cancelled) return
-        ctx = gsap.context(() => {
-          gsap
-            .timeline({ defaults: { ease: 'expo.out' } })
-            .from('[data-word]', { yPercent: 40, opacity: 0, duration: 1.1, stagger: 0.08 })
-            .from('.lp-strip', { clipPath: 'inset(0 50% 0 50% round 0.12em)', duration: 1.4, ease: 'expo.inOut' }, 0.05)
-            .from('.lp-strip img', { scale: 1.35, duration: 2.2 }, 0.05)
-            .from('.lp-form, .lp-alt, .lp-lead, .lp-top > *', { y: 16, opacity: 0, duration: 0.9, stagger: 0.07 }, 0.6)
-
-          // A slow drift keeps the one picture alive without pulling focus.
-          gsap.to('.lp-strip img', {
-            xPercent: -4,
-            duration: 14,
-            ease: 'sine.inOut',
-            repeat: -1,
-            yoyo: true,
-            delay: 2.2,
-          })
-        }, root)
-      })
-      .catch(() => {
-        // Motion is optional; the page is complete without it.
-      })
-
-    return () => {
-      cancelled = true
-      ctx?.revert()
+    if (prefersReducedMotion()) {
+      gsap.set(progress, { value: 1 })
+      setStep(EVENTS.length - 1)
+      return undefined
     }
-  }, [scope])
+
+    const ctx = gsap.context(() => {
+      gsap
+        .timeline({ defaults: { ease: 'expo.out' } })
+        .from('[data-word]', { yPercent: 110, duration: 1.1, stagger: 0.06 })
+        .from('.lp-sub, .lp-form, .lp-alt, .lp-carriers', { y: 18, opacity: 0, duration: 0.9, stagger: 0.07 }, 0.35)
+        .from('.lp-stage', { opacity: 0, duration: 1.4, ease: 'power2.out' }, 0.1)
+        .from('.lp-voyage', { y: 28, opacity: 0, duration: 1 }, 0.9)
+
+      gsap
+        .timeline({ repeat: -1, delay: 1, defaults: { ease: 'power2.inOut' } })
+        .call(() => setStep(0))
+        .set(progress, { value: 0 })
+        .to(progress, { value: 0.5, duration: 4.4 })
+        .call(() => setStep(1))
+        .to({}, { duration: 1.3 })
+        .call(() => setStep(2))
+        .to(progress, { value: 1, duration: 2.6 })
+        .call(() => setStep(3))
+        .to({}, { duration: 3.2 })
+    }, root)
+
+    return () => ctx.revert()
+  }, [scope, progress, setStep])
 }
 
 function getSignInMessage(error) {
@@ -145,6 +155,9 @@ function Login() {
   const [authError, setAuthError] = useState('')
   const inputRef = useRef(null)
   const pageRef = useRef(null)
+  // A stable mutable object: GSAP writes it, the globe's render loop reads it.
+  const [progress] = useState(() => ({ value: 0 }))
+  const [step, setStep] = useState(0)
   const signingInRef = useRef(false)
   const cleanBl = cleanBillOfLading(billOfLading)
   const carrier = detectCarrierFromBlNumber(cleanBl)
@@ -152,7 +165,8 @@ function Login() {
   const disabled = busy || Boolean(configError)
   const hasIdentifier = /[A-Z0-9]/.test(cleanBl)
 
-  useEntrance(pageRef)
+  useSmoothScroll()
+  useVoyage(pageRef, progress, setStep)
 
   async function startSignIn(nextAction) {
     if (signingInRef.current || disabled) return
@@ -191,107 +205,141 @@ function Login() {
     ? `${getCarrierLabel(carrier)} bill of lading. Sign in to load its containers and ETA.`
     : hasIdentifier
       ? 'Prefix not recognised. You can pick the carrier after signing in.'
-      : 'MSC, ONE, Evergreen and PIL bills of lading.'
+      : 'Paste one to start, or sign in to see your shipments.'
+  const event = EVENTS[step]
+  const stopIndex = step === 0 ? 0 : step < 3 ? 1 : 2
 
   return (
     <main ref={pageRef} className="lp">
-      <header className="lp-top">
-        <Link to="/" className="lp-word">
-          <ShipTrackMark />
-          ShipTrack
-        </Link>
-        <a className="lp-source" href="https://github.com/nishank23/shipmenttrack">
-          Source on GitHub
-        </a>
-      </header>
+      <section className="lp-panel" aria-labelledby="lp-title">
+        <header className="lp-top">
+          <Link to="/" className="lp-word">
+            <ShipTrackMark />
+            ShipTrack
+          </Link>
+          <a className="lp-source" href="https://github.com/nishank23/shipmenttrack">
+            Source on GitHub
+          </a>
+        </header>
 
-      <section className="lp-stage" aria-labelledby="lp-title">
-        <h1 id="lp-title" className="lp-sentence" aria-label="Know when your container lands.">
-          <span data-word aria-hidden="true">Know when</span>
-          <span className="lp-strip" aria-hidden="true">
-            <img src={containerPhoto} alt="" width="690" height="920" decoding="async" fetchPriority="high" />
-          </span>
-          <span data-word aria-hidden="true">lands.</span>
-        </h1>
-
-        <form
-          className="lp-form"
-          onSubmit={(event) => {
-            event.preventDefault()
-            void startSignIn('track')
-          }}
-          noValidate
-        >
-          <label className="lp-label" htmlFor="lp-bl">
-            Bill of lading number
-          </label>
-          <div className="lp-row" data-invalid={Boolean(fieldError) || undefined}>
-            <input
-              ref={inputRef}
-              id="lp-bl"
-              name="bl"
-              type="text"
-              value={billOfLading}
-              onChange={(event) => {
-                setBillOfLading(event.target.value)
-                setFieldError('')
-              }}
-              placeholder="e.g. MEDUKU648102"
-              maxLength={40}
-              autoComplete="off"
-              autoCapitalize="characters"
-              spellCheck={false}
-              readOnly={busy}
-              aria-invalid={Boolean(fieldError)}
-              aria-describedby="lp-bl-feedback"
-            />
-            <AuthButton type="submit" variant="track" pending={action === 'track'} disabled={disabled}>
-              Track this B/L
-              <Icon icon="solar:arrow-right-linear" width="18" height="18" aria-hidden="true" />
-            </AuthButton>
-          </div>
-          <p id="lp-bl-feedback" className="lp-feedback" aria-live="polite">
-            {fieldError ? (
-              <span className="lp-inline-error">{fieldError}</span>
-            ) : (
-              <>
-                {carrier ? <Icon icon="solar:check-circle-bold" width="16" height="16" aria-hidden="true" /> : null}
-                {fieldHint}
-              </>
-            )}
+        <div className="lp-copy">
+          <h1 id="lp-title" aria-label="Every container. Every ETA.">
+            <span className="lp-line" aria-hidden="true">
+              <span data-word>Every</span> <span data-word>container.</span>
+            </span>
+            <span className="lp-line" aria-hidden="true">
+              <span data-word>Every</span> <span data-word>ETA.</span>
+            </span>
+          </h1>
+          <p className="lp-sub">
+            Paste a bill of lading. ShipTrack follows each container through the carrier&apos;s
+            events and emails you the morning its ETA moves.
           </p>
-        </form>
 
-        <div className="lp-alt">
-          <AuthButton
-            type="button"
-            variant="google"
-            pending={action === 'google' || (!action && loading)}
-            disabled={disabled}
-            onClick={() => {
-              void startSignIn('google')
+          <form
+            className="lp-form"
+            onSubmit={(submitEvent) => {
+              submitEvent.preventDefault()
+              void startSignIn('track')
             }}
+            noValidate
           >
-            <GoogleMark />
-            Continue with Google
-          </AuthButton>
-          {authError || configError ? (
-            <p className="lp-inline-error" role="alert">
-              {authError || 'Sign-in is temporarily unavailable.'}
+            <label className="lp-label" htmlFor="lp-bl">
+              Bill of lading number
+            </label>
+            <div className="lp-row" data-invalid={Boolean(fieldError) || undefined}>
+              <input
+                ref={inputRef}
+                id="lp-bl"
+                name="bl"
+                type="text"
+                value={billOfLading}
+                onChange={(changeEvent) => {
+                  setBillOfLading(changeEvent.target.value)
+                  setFieldError('')
+                }}
+                placeholder="e.g. MEDUKU648102"
+                maxLength={40}
+                autoComplete="off"
+                autoCapitalize="characters"
+                spellCheck={false}
+                readOnly={busy}
+                aria-invalid={Boolean(fieldError)}
+                aria-describedby="lp-bl-feedback"
+              />
+              <AuthButton type="submit" variant="track" pending={action === 'track'} disabled={disabled}>
+                Track
+                <Icon icon="solar:arrow-right-linear" width="18" height="18" aria-hidden="true" />
+              </AuthButton>
+            </div>
+            <p id="lp-bl-feedback" className="lp-feedback" aria-live="polite">
+              {fieldError ? (
+                <span className="lp-inline-error">{fieldError}</span>
+              ) : (
+                <>
+                  {carrier ? <Icon icon="solar:check-circle-bold" width="16" height="16" aria-hidden="true" /> : null}
+                  {fieldHint}
+                </>
+              )}
             </p>
-          ) : (
-            <p className="lp-alt-note">Already tracking? Same Google account.</p>
-          )}
+          </form>
+
+          <div className="lp-alt">
+            <AuthButton
+              type="button"
+              variant="google"
+              pending={action === 'google' || (!action && loading)}
+              disabled={disabled}
+              onClick={() => {
+                void startSignIn('google')
+              }}
+            >
+              <GoogleMark />
+              Continue with Google
+            </AuthButton>
+            {authError || configError ? (
+              <p className="lp-inline-error" role="alert">
+                {authError || 'Sign-in is temporarily unavailable.'}
+              </p>
+            ) : null}
+          </div>
+
+          <p className="lp-carriers">Reads MSC, ONE, Evergreen and PIL bills of lading.</p>
+          <p className="sr-only" role="status">
+            {action ? 'Connecting to Google.' : loading ? 'Checking your session.' : ''}
+          </p>
         </div>
-        <p className="sr-only" role="status">
-          {action ? 'Connecting to Google.' : loading ? 'Checking your session.' : ''}
+
+        <p className="lp-foot">
+          Globe land data: NASA Blue Marble, public domain.
         </p>
       </section>
 
-      <p className="lp-lead">
-        ShipTrack reads the carrier&apos;s events for every container on your bill of lading and emails
-        you the morning its ETA moves.
-      </p>
+      <section className="lp-stage" aria-label="Example voyage on a globe">
+        <VoyageGlobe stops={STOPS} focus={GLOBE_FOCUS} progress={progress} className="lp-globe">
+          <div className="lp-globe-fallback" aria-hidden="true" />
+        </VoyageGlobe>
+
+        <article className="lp-voyage" data-ui aria-live="off">
+          <header className="lp-voyage-head">
+            <span>MEDUKU648102 · MSC</span>
+            <span>Example voyage</span>
+          </header>
+          <div className="lp-voyage-event" key={step}>
+            <p className="lp-voyage-title">{event.title}</p>
+            <p className="lp-voyage-meta">
+              {event.place} · {event.date}
+            </p>
+          </div>
+          <ol className="lp-voyage-stops">
+            {STOPS.map((stop, index) => (
+              <li key={stop.name} className={index <= stopIndex ? 'is-reached' : undefined}>
+                {stop.name}
+              </li>
+            ))}
+          </ol>
+        </article>
+      </section>
     </main>
   )
 }

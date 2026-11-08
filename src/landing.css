@@ -1,25 +1,28 @@
 /*
- * ShipTrack sign-in. Direction: "The sentence is the layout".
- * Idea: the container itself is the missing word in "Know when ___ lands.",
- * a strip of photograph set inline with the type. Brand tokens (--st-*) and
- * Albert Sans are kept; the photo and the one blue action carry the colour.
+ * ShipTrack sign-in.
+ * Thesis: the product doing its job. A real voyage (MEDUKU648102:
+ * Surabaya, Port Elizabeth, Maputo) is traced on a WebGL globe while the
+ * event card beside it reads out each carrier event, ending on the ETA.
+ * Brand tokens (--st-*) and Albert Sans; the globe stage is always navy.
  */
 .lp {
   --lp-ink: var(--st-text);
   --lp-muted: var(--st-muted);
   --lp-accent: var(--st-accent);
   --lp-mark-lines: var(--st-canvas);
-  --lp-margin: clamp(16px, 2.4vw, 32px);
+  --lp-margin: clamp(20px, 3vw, 48px);
   --lp-ease: cubic-bezier(0.16, 1, 0.3, 1);
-  --lp-display: clamp(52px, 8.4vw, 150px);
+  --stage-bg: #0b1220;
+  --stage-ink: #eef1f6;
+  --stage-muted: #9fb0c8;
+  --stage-accent: #8bb9ff;
 
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
   min-block-size: 100dvh;
   background-color: var(--st-canvas);
   color: var(--lp-ink);
   font-family: var(--st-font);
-  overflow-x: clip;
 }
 
 .lp *,
@@ -29,18 +32,24 @@
 }
 
 .lp p,
-.lp h1 {
+.lp h1,
+.lp ol {
   margin: 0;
 }
 
-/* ---------- Top line ---------- */
+/* ---------- Left: the product's front door ---------- */
+
+.lp-panel {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  padding: 20px var(--lp-margin) 24px;
+}
 
 .lp-top {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 18px var(--lp-margin);
 }
 
 .lp-word {
@@ -53,10 +62,6 @@
   font-weight: 700;
   letter-spacing: -0.02em;
   text-decoration: none;
-}
-
-.lp-word svg {
-  color: var(--lp-ink);
 }
 
 .lp-source {
@@ -76,61 +81,41 @@
   text-decoration-color: currentColor;
 }
 
-/* ---------- The sentence ---------- */
-
-.lp-stage {
-  display: grid;
-  align-content: center;
-  justify-items: center;
-  gap: 0;
-  padding-inline: var(--lp-margin);
-  padding-block: 8px 24px;
+.lp-copy {
+  align-self: center;
+  inline-size: min(100%, 540px);
+  padding-block: 32px;
 }
 
-.lp-sentence {
-  display: flex;
-  align-items: baseline;
-  gap: 0.22em;
-  inline-size: 100%;
-  font-size: var(--lp-display);
+.lp-copy h1 {
+  font-size: clamp(44px, 5.2vw, 84px);
   font-weight: 700;
-  line-height: 1;
   letter-spacing: -0.045em;
-  white-space: nowrap;
+  line-height: 0.98;
 }
 
-.lp-sentence [data-word] {
+.lp-line {
+  display: block;
+  overflow: hidden;
+  padding-block-end: 0.06em;
+}
+
+.lp-line [data-word] {
   display: inline-block;
 }
 
-/* The picture stands where a word would: one cap-height tall, filling the rest of the line. */
-.lp-strip {
-  position: relative;
-  flex: 1 1 2.6em;
-  block-size: 0.72em;
-  min-inline-size: 2.2em;
-  overflow: hidden;
-  border-radius: 0.12em;
-  background-color: #1b1b1d;
+.lp-sub {
+  max-inline-size: 42ch;
+  margin-block-start: 28px;
+  color: var(--lp-ink);
+  font-size: 18px;
+  line-height: 1.5;
 }
-
-.lp-strip img {
-  position: absolute;
-  inset: -2% -6%;
-  inline-size: 112%;
-  block-size: 104%;
-  max-inline-size: none;
-  object-fit: cover;
-  object-position: 55% 42%;
-}
-
-/* ---------- The action ---------- */
 
 .lp-form {
   display: grid;
-  gap: 10px;
-  inline-size: min(100%, 600px);
-  margin-block-start: clamp(40px, 7vh, 72px);
+  gap: 8px;
+  margin-block-start: 32px;
 }
 
 .lp-label {
@@ -142,9 +127,9 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 6px 6px 20px;
+  padding: 6px 6px 6px 18px;
   border: 1px solid var(--st-field-border);
-  border-radius: 999px;
+  border-radius: 12px;
   background-color: var(--st-field);
   transition: border-color 180ms ease, box-shadow 180ms ease;
 }
@@ -161,11 +146,11 @@
 .lp-row input {
   flex: 1;
   min-inline-size: 0;
-  block-size: 48px;
+  block-size: 46px;
   border: 0;
   background: transparent;
   color: var(--lp-ink);
-  font-size: 18px;
+  font-size: 17px;
   font-weight: 600;
   letter-spacing: 0.02em;
   text-transform: uppercase;
@@ -185,7 +170,6 @@
   align-items: center;
   gap: 6px;
   min-block-size: 22px;
-  padding-inline: 20px;
   color: var(--lp-muted);
   font-size: 15px;
   overflow-wrap: anywhere;
@@ -208,16 +192,16 @@
 .lp-button {
   display: grid;
   flex: none;
-  min-block-size: 48px;
+  min-block-size: 46px;
   place-items: center;
-  padding-inline: 22px;
+  padding-inline: 20px;
   border: 0;
-  border-radius: 999px;
+  border-radius: 8px;
   font-size: 16px;
   font-weight: 700;
   line-height: 1.2;
   cursor: pointer;
-  transition: background-color 180ms ease, color 180ms ease, transform 160ms var(--lp-ease);
+  transition: background-color 180ms ease, transform 160ms var(--lp-ease);
 }
 
 .lp-button:enabled:active {
@@ -235,7 +219,8 @@
 
 .lp-button--google {
   min-block-size: 44px;
-  padding-inline: 14px;
+  padding-inline: 12px;
+  margin-inline-start: -12px;
   background-color: transparent;
   color: var(--lp-ink);
   font-weight: 600;
@@ -310,30 +295,173 @@
 }
 
 .lp-alt {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: center;
-  gap: 4px 12px;
-  margin-block-start: 6px;
+  display: grid;
+  justify-items: start;
+  gap: 4px;
+  margin-block-start: 10px;
 }
 
-.lp-alt-note {
+.lp-carriers {
+  margin-block-start: 28px;
   color: var(--lp-muted);
   font-size: 15px;
 }
 
-/* ---------- Closing sentence ---------- */
+.lp-foot {
+  color: var(--lp-muted);
+  font-size: 13px;
+}
 
-.lp-lead {
-  justify-self: center;
-  max-inline-size: 46ch;
-  padding: 0 var(--lp-margin) 32px;
-  color: var(--lp-ink);
-  font-size: clamp(17px, 1.4vw, 20px);
-  line-height: 1.5;
-  text-align: center;
-  text-wrap: balance;
+/* ---------- Right: the voyage ---------- */
+
+.lp-stage {
+  position: relative;
+  min-block-size: 100dvh;
+  overflow: hidden;
+  background-color: var(--stage-bg);
+  color: var(--stage-ink);
+}
+
+.voyage-globe {
+  position: absolute;
+  inset: 0;
+}
+
+.voyage-globe canvas {
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+}
+
+.voyage-globe-label {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  padding: 0 0 0 12px;
+  margin-block-start: -9px;
+  color: var(--stage-ink);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+  white-space: nowrap;
+  pointer-events: none;
+  transition: opacity 300ms ease;
+  will-change: transform;
+}
+
+/* Static stand-in when WebGL or motion is unavailable: the same land data, flat. */
+.lp-globe-fallback {
+  position: absolute;
+  inset: 0;
+  background: url('/globe/land-mask.png') 66% 62% / 210% auto no-repeat;
+  opacity: 0.16;
+}
+
+.lp-voyage {
+  position: absolute;
+  inset-inline-start: clamp(16px, 2.6vw, 40px);
+  inset-block-end: clamp(16px, 2.6vw, 40px);
+  inline-size: min(400px, calc(100% - 32px));
+  padding: 18px 20px 16px;
+  border: 1px solid rgba(139, 185, 255, 0.18);
+  border-radius: 14px;
+  background-color: rgba(15, 24, 42, 0.94);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+
+.lp-voyage-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--stage-muted);
+  font-size: 13px;
+}
+
+.lp-voyage-event {
+  margin-block-start: 12px;
+  animation: lp-event-in 600ms var(--lp-ease) both;
+}
+
+.lp-voyage-title {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lp-voyage-meta {
+  margin-block-start: 2px;
+  color: var(--stage-muted);
+  font-size: 14px;
+}
+
+.lp-voyage-stops {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-block-start: 16px;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+  color: var(--stage-muted);
+}
+
+.lp-voyage-stops::before {
+  position: absolute;
+  inset-block-start: 4px;
+  inset-inline: 5px;
+  block-size: 2px;
+  background-color: rgba(139, 185, 255, 0.2);
+  content: '';
+}
+
+.lp-voyage-stops li {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  transition: color 400ms ease;
+}
+
+.lp-voyage-stops li:first-child {
+  justify-items: start;
+}
+
+.lp-voyage-stops li:last-child {
+  justify-items: end;
+}
+
+.lp-voyage-stops li::before {
+  inline-size: 10px;
+  block-size: 10px;
+  border-radius: 50%;
+  background-color: var(--stage-bg);
+  box-shadow: 0 0 0 2px rgba(139, 185, 255, 0.4);
+  content: '';
+  transition: background-color 400ms ease, box-shadow 400ms ease;
+}
+
+.lp-voyage-stops li.is-reached {
+  color: var(--stage-ink);
+}
+
+.lp-voyage-stops li.is-reached::before {
+  background-color: var(--stage-accent);
+  box-shadow: 0 0 0 2px var(--stage-accent);
+}
+
+@keyframes lp-event-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 @keyframes lp-spin {
@@ -353,74 +481,53 @@
   }
 }
 
-/* ---------- Phone: the picture drops between the words ---------- */
+/* ---------- Tablet and phone: the form first, the voyage under it ---------- */
 
 @media (max-width: 900px) {
   .lp {
-    --lp-display: clamp(44px, 15vw, 104px);
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  .lp-top {
-    padding-block: 10px;
+  .lp-copy {
+    inline-size: 100%;
+    padding-block: 28px 32px;
+  }
+
+  .lp-copy h1 {
+    font-size: clamp(40px, 10vw, 72px);
+  }
+
+  .lp-foot {
+    display: none;
   }
 
   .lp-stage {
-    justify-items: stretch;
-    padding-block: 4px 16px;
-  }
-
-  .lp-sentence {
-    display: grid;
-    gap: 12px;
-    white-space: normal;
-  }
-
-  .lp-strip {
-    display: block;
-    flex: none;
-    inline-size: 100%;
-    block-size: auto;
-    aspect-ratio: 2 / 1;
-    border-radius: 14px;
-  }
-
-  .lp-form {
-    inline-size: 100%;
-    margin-block-start: 28px;
-  }
-
-  .lp-alt {
-    justify-content: flex-start;
-  }
-
-  .lp-lead {
-    justify-self: start;
-    text-align: start;
-    font-size: 17px;
-    padding-block-end: 20px;
+    min-block-size: clamp(440px, 72vw, 620px);
   }
 }
 
-@media (max-width: 640px) {
+@media (max-width: 520px) {
   .lp-row {
     flex-direction: column;
     align-items: stretch;
     padding: 6px;
-    border-radius: 24px;
   }
 
   .lp-row input {
-    padding-inline: 14px;
+    padding-inline: 12px;
   }
 
   .lp-button--track {
-    min-block-size: 52px;
+    min-block-size: 50px;
   }
 
-  .lp-feedback {
-    padding-inline: 4px;
+  .lp-voyage {
+    padding: 14px 16px;
   }
 
+  .lp-voyage-title {
+    font-size: 18px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

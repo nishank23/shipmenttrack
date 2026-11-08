@@ -1,0 +1,24 @@
+[
+  {
+    "file": "public/globe/land-mask.png",
+    "media": "image",
+    "ref": "commons:84107736",
+    "title": "Blue Marble Next Generation + topography + bathymetry",
+    "creator": "Reto St\u00f6ckli, NASA Earth Observatory, modified by NordNordWest",
+    "creatorUrl": null,
+    "date": "2004-08",
+    "license": "public domain",
+    "licenseCode": "pd",
+    "licenseUrl": "https://creativecommons.org/publicdomain/mark/1.0/",
+    "creditRequired": false,
+    "page": "https://commons.wikimedia.org/wiki/File:Blue_Marble_Next_Generation_%2B_topography_%2B_bathymetry.jpg",
+    "via": "Wikimedia Commons",
+    "image": "https://upload.wikimedia.org/wikipedia/commons/5/56/Blue_Marble_Next_Generation_%2B_topography_%2B_bathymetry.jpg",
+    "width": 3600,
+    "height": 1800,
+    "bytes": 2022542,
+    "credit": "\"Blue Marble Next Generation + topography + bathymetry\" by Reto St\u00f6ckli, NASA Earth Observatory, modified by NordNordW\u2026, public domain, via Wikimedia Commons",
+    "notes": " Converted to a 1024x512 land/ocean mask; the original image is not shipped.",
+    "saved": "2026-11-08T16:14:58.611Z"
+  }
+]
