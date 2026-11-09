@@ -13,8 +13,11 @@ const firebaseConfig = {
   measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
 }
 
+// measurementId is only for Analytics, which the app doesn't load.
+const optionalFirebaseKeys = new Set(['measurementId'])
+
 const missingFirebaseEnvKeys = Object.entries(firebaseConfig)
-  .filter(([, value]) => !value)
+  .filter(([key, value]) => !value && !optionalFirebaseKeys.has(key))
   .map(([key]) => key)
 
 const firebaseConfigError =
