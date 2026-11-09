@@ -14,6 +14,7 @@ import {
   extractEvergreenContainerMoves,
   mergeTrackingResults,
 } from './lib/trackingExtractors.js'
+import { fetchVesselPosition, getVesselAtSea } from './lib/vesselPosition.js'
 import { getShipmentNotificationKind } from './lib/notificationPreferences.js'
 
 initializeApp();
@@ -224,6 +225,7 @@ export const lookupTracking = onCall(
             eventCount: events.length,
             trackingStatus: 'live',
             trackingError: null,
+            ...(await getVesselPositionUpdate(events, blNo)),
           },
           { merge: true },
         ),
@@ -862,6 +864,7 @@ async function resolveTrackingInfo({ shipmentId, blNo, carrier, firestoreEta, fo
         eventCount: events.length,
         trackingStatus: 'live',
         trackingError: null,
+        ...(await getVesselPositionUpdate(events, blNo)),
       },
       { merge: true },
     )
@@ -1189,6 +1192,7 @@ function normalizeEvents(events) {
         description: normalizeString(event?.description || ''),
         location: normalizeString(event?.location || ''),
         container: normalizeString(event?.container || ''),
+        vesselImo: normalizeString(event?.vesselImo || ''),
         occurredAt: occurredAt ? Timestamp.fromDate(occurredAt) : null,
         // Carrier timelines mix actual and planned moves. Future dates are planned,
         // and so are forecast rows (e.g. MSC "Estimated Time of Arrival") even
@@ -1199,6 +1203,39 @@ function normalizeEvents(events) {
       }
     })
     .filter((event) => event.title)
+}
+
+/**
+ * Shipment fields for the live vessel position (VesselFinder AIS). Cleared
+ * once the box is ashore; left as it was when the lookup can't run (no
+ * VESSELFINDER_API_KEY, no IMO from the carrier) or fails.
+ */
+async function getVesselPositionUpdate(events, blNo) {
+  const vessel = getVesselAtSea(events)
+  if (!vessel) return { vesselPosition: FieldValue.delete() }
+
+  const apiKey = normalizeString(process.env.VESSELFINDER_API_KEY)
+  if (!apiKey) return {}
+
+  try {
+    const position = await fetchVesselPosition({
+      imo: vessel.imo,
+      apiKey,
+      http: axios,
+      timeout: HTTP_TIMEOUT_MS,
+    })
+    if (!position) return {}
+    return {
+      vesselPosition: {
+        ...position,
+        reportedAt: position.reportedAt ? Timestamp.fromDate(position.reportedAt) : null,
+        checkedAt: Timestamp.now(),
+      },
+    }
+  } catch (lookupError) {
+    warn(`Vessel position lookup failed for ${blNo}`, lookupError)
+    return {}
+  }
 }
 
 function isForecastEventTitle(title) {

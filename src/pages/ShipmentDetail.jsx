@@ -135,6 +135,18 @@ function voyageHeadline(route) {
   }
 }
 
+// "Live AIS position of MSC CAIRO IV, 12.4 kn, 3 h ago."
+function aisNote(position) {
+  const reportedAt = position?.reportedAt?.toDate?.() ?? null
+  const hours = reportedAt ? Math.max(0, Math.round((Date.now() - reportedAt.getTime()) / 3600000)) : null
+  const age = hours === null ? '' : hours < 1 ? 'under an hour ago' : hours < 48 ? `${hours} h ago` : `${Math.round(hours / 24)} days ago`
+  return [
+    `Live AIS position${position?.vesselName ? ` of ${position.vesselName}` : ''}`,
+    Number.isFinite(position?.speed) ? `${position.speed} kn` : '',
+    age,
+  ].filter(Boolean).join(', ') + '.'
+}
+
 /**
  * Where the box is on its voyage, on the globe. The route is the ports named
  * in carrier events; the vessel sits at the latest one (or part-way along the
@@ -194,7 +206,7 @@ function VoyagePanel({ history, eta, position }) {
         </ol>
         <p className="sd-meta sd-voyage__note" data-voyage-reveal>
           {route.status === 'live'
-            ? 'Vessel position from live AIS data.'
+            ? aisNote(position)
             : 'Vessel position is estimated from the latest carrier event. Arcs join ports and are not the sailing path.'}
         </p>
       </div>

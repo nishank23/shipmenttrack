@@ -39,7 +39,7 @@ function buildResult(source, blNo, eta = null, events = []) {
   }
 }
 
-function buildEvent({ id, title, description, location, container, occurredAt }) {
+function buildEvent({ id, title, description, location, container, occurredAt, vesselImo }) {
   return {
     id: normalizeString(id),
     title: normalizeString(title) || 'Status update',
@@ -47,6 +47,8 @@ function buildEvent({ id, title, description, location, container, occurredAt })
     location: normalizeString(location),
     container: normalizeString(container),
     occurredAt: parseDateCandidate(occurredAt),
+    // Only MSC names the vessel's IMO; it keys the live AIS position lookup.
+    vesselImo: /^\d{7}$/.test(normalizeString(vesselImo)) ? normalizeString(vesselImo) : '',
   }
 }
 
@@ -109,6 +111,7 @@ function extractMscTracking(payload, blNo) {
         location: event?.Location,
         container: containerNo,
         occurredAt: event?.Date,
+        vesselImo: event?.Vessel?.IMO,
       })
     })
   })

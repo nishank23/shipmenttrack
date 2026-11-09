@@ -5,7 +5,7 @@ const calendarDay = (date) => Date.UTC(date.getFullYear(), date.getMonth(), date
 
 // Carrier wording for "the box is at its destination". Transshipment
 // discharges happen mid-voyage, so they never count.
-const arrivalEvent = /\b(?:import discharged|discharged from vessel|discharged at (?:pod|destination)|unloaded from vessel at (?:pod|destination)|vessel arrival at (?:pod|destination)|arrived at (?:pod|destination)|delivered|import gate out|empty (?:received|returned))\b/i
+const arrivalEvent = /\b(?:import discharged|discharged from vessel|discharged at (?:pod|destination)|unloaded from vessel at (?:pod|destination)|vessel arrival at (?:pod|destination)|arrived at (?:pod|destination)|delivered|import gate out|empty (?:container )?(?:received|returned))\b/i
 
 export function isArrivalEvent(event) {
   return Boolean(event?.title && !event.estimated && !/transship/i.test(event.title) && arrivalEvent.test(event.title))

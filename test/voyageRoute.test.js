@@ -64,3 +64,27 @@ test('fewer than two known ports gives no route', () => {
   const history = getCheckpointHistory({ events: [{ title: 'Gate in', location: 'MAPUTO, MZ', occurredAt: '2026-11-01T00:00:00Z' }] }, null, now)
   assert.equal(getVoyageRoute(history, { now }), null)
 })
+
+test('an arrival at the last port still counts after the empty return', () => {
+  const history = getCheckpointHistory({
+    events: [
+      { title: 'Vessel departure from port of loading', location: 'HAZIRA, IN', occurredAt: '2026-07-03T00:00:00Z' },
+      { title: 'Vessel arrival at POD', location: 'MAPUTO, MZ', occurredAt: '2026-08-11T00:00:00Z' },
+      { title: 'Empty Container Returned from Customer', location: 'MAPUTO, MZ', occurredAt: '2026-08-18T00:00:00Z' },
+    ],
+  }, null, now)
+  const route = getVoyageRoute(history, { now })
+  assert.equal(route.status, 'arrived')
+  assert.deepEqual(route.stops.map((stop) => stop.name), ['Hazira', 'Maputo'])
+})
+
+test('unloading is not a departure', () => {
+  const history = getCheckpointHistory({
+    events: [
+      { title: 'Export Loaded on Vessel', location: 'SURABAYA, ID', occurredAt: '2026-10-01T00:00:00Z' },
+      { title: 'Unloaded from vessel', location: 'SINGAPORE, SG', occurredAt: '2026-10-06T00:00:00Z' },
+      { title: 'Estimated arrival', location: 'MAPUTO, MZ', occurredAt: '2026-11-19T00:00:00Z', estimated: true },
+    ],
+  }, null, now)
+  assert.equal(getVoyageRoute(history, { now }).status, 'at-port')
+})

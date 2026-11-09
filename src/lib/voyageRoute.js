@@ -2,7 +2,8 @@ import { resolvePort } from './portLocations.js'
 import { isArrivalEvent } from './shipmentDashboard.js'
 import { buildLane } from './tradeLanes.js'
 
-const departureEvent = /load|depart|sail|on ?board/i
+// Matches functions/lib/vesselPosition.js. "Unloaded" must not count.
+const departureEvent = /\b(?:load(?:ed|ing)|depart(?:ed|ure)?|sail(?:ed|ing)?|on ?board)\b/i
 const shortDate = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' })
 
 function toUnit({ lat, lon }) {
@@ -45,6 +46,9 @@ export function getVoyageRoute(history, { eta = null, now = Date.now(), position
     const stop = stopFor(port)
     if (stop) stop.lastEvent = event
     else stops.push({ port, reached: true, at: event.occurredAt, lastEvent: event })
+    // Any arrival there counts, not just the latest event (an empty return
+    // or gate out can follow the discharge).
+    if (isArrivalEvent(event)) stopFor(port).arrived = true
   }
   for (const event of history.planned) {
     const port = resolvePort(event.location)
@@ -60,7 +64,7 @@ export function getVoyageRoute(history, { eta = null, now = Date.now(), position
   let index = latest ? stops.indexOf(stopFor(resolvePort(latest.location))) : 0
   let leg = 0
   let status = latest ? 'at-port' : 'planned'
-  if (latest && isArrivalEvent(latest) && index === stops.length - 1) {
+  if (latest && index === stops.length - 1 && (isArrivalEvent(latest) || stops[index].arrived)) {
     status = 'arrived'
   } else if (latest && departureEvent.test(latest.title) && index < stops.length - 1) {
     status = 'in-transit'
