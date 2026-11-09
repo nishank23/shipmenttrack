@@ -178,19 +178,18 @@ function angleBetween(a, b) {
 /**
  * Samples a lane along great-circle legs between waypoints. Returns unit-sphere
  * points with a gentle lift over the whole lane, and the arc-length fraction at
- * each named stop (in order).
+ * every waypoint and at each named stop (in order).
  */
 export function buildLane(lane, { radius = 1, altitude = 0.006, hump = 0.03 } = {}) {
   const units = lane.waypoints.map((point) => toUnit(point.lat, point.lon))
   const raw = []
-  const namedAt = []
+  const waypointAt = [0]
 
   units.slice(0, -1).forEach((a, leg) => {
     const b = units[leg + 1]
     const angle = angleBetween(a, b)
     const steps = Math.max(4, Math.ceil(angle / 0.012))
     const sin = Math.sin(angle) || 1
-    if (leg === 0 && lane.waypoints[0].name) namedAt.push(0)
     for (let step = leg === 0 ? 0 : 1; step <= steps; step += 1) {
       const t = step / steps
       const wa = angle ? Math.sin((1 - t) * angle) / sin : 1 - t
@@ -201,7 +200,7 @@ export function buildLane(lane, { radius = 1, altitude = 0.006, hump = 0.03 } = 
       const length = Math.hypot(x, y, z) || 1
       raw.push([x / length, y / length, z / length])
     }
-    if (lane.waypoints[leg + 1].name) namedAt.push(raw.length - 1)
+    waypointAt.push(raw.length - 1)
   })
 
   const cumulative = [0]
@@ -210,15 +209,29 @@ export function buildLane(lane, { radius = 1, altitude = 0.006, hump = 0.03 } = 
   }
   const total = cumulative[cumulative.length - 1] || 1
 
+  // Sea lanes hug the surface with one gentle lift; a lane of straight port
+  // to port legs (`legArcs`) lifts each leg on its own, higher for longer legs,
+  // so a leg reads as a hop between ports rather than a path over land.
+  let leg = 0
   const points = raw.map((point, index) => {
-    const u = cumulative[index] / total
-    const r = radius + altitude + Math.sin(Math.PI * u) * hump
+    let lift
+    if (lane.legArcs) {
+      while (leg < waypointAt.length - 2 && index > waypointAt[leg + 1]) leg += 1
+      const start = cumulative[waypointAt[leg]]
+      const span = cumulative[waypointAt[leg + 1]] - start
+      lift = span ? Math.sin(Math.PI * ((cumulative[index] - start) / span)) * Math.min(0.14, span * 0.16) : 0
+    } else {
+      lift = Math.sin(Math.PI * (cumulative[index] / total)) * hump
+    }
+    const r = radius + altitude + lift
     return [point[0] * r, point[1] * r, point[2] * r]
   })
 
+  const waypointFractions = waypointAt.map((index) => cumulative[index] / total)
   return {
     points,
-    stopFractions: namedAt.map((index) => cumulative[index] / total),
+    waypointFractions,
+    stopFractions: waypointFractions.filter((_, index) => lane.waypoints[index].name),
     stops: lane.waypoints.filter((point) => point.name),
   }
 }

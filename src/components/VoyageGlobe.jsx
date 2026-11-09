@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { buildLane } from '../lib/tradeLanes'
+import './VoyageGlobe.css'
 
 /**
  * A dotted globe that plays a set of trade lanes. Land dots come from a
@@ -75,7 +76,7 @@ const TRAIL_FRAGMENT = `
     gl_FragColor = vec4(color, mix(0.4, 1.0, trail) * dash);
   }`
 
-function VoyageGlobe({ lanes, voyage, className = '', children }) {
+function VoyageGlobe({ lanes, voyage, zoom = 1, className = '', children }) {
   const hostRef = useRef(null)
   const labelRefs = useRef([])
   const [mode, setMode] = useState('loading')
@@ -297,8 +298,10 @@ function VoyageGlobe({ lanes, voyage, className = '', children }) {
           renderer.setSize(clientWidth, clientHeight, false)
           const aspect = clientWidth / clientHeight
           camera.aspect = aspect
-          // Keep the whole globe in frame on narrow panels.
-          camera.position.z = aspect < 1 ? 5.2 / Math.max(aspect, 0.5) : 5.2
+          // Keep the whole globe in frame on narrow panels; `zoom` moves in
+          // for a regional voyage, less on small panels so labels keep room.
+          const distance = Math.max(5.2 / Math.min(zoom, clientWidth < 600 ? 1.25 : zoom), 2.4)
+          camera.position.z = aspect < 1 ? distance / Math.max(aspect, 0.5) : distance
           camera.updateProjectionMatrix()
         }
         const resizeObserver = new ResizeObserver(resize)
@@ -400,6 +403,13 @@ function VoyageGlobe({ lanes, voyage, className = '', children }) {
               const x = (projected.x * 0.5 + 0.5) * rect.width
               const y = (-projected.y * 0.5 + 0.5) * rect.height
               node.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0)`
+              // Near the right edge the label sits on the dot's left instead.
+              port.width ??= node.offsetWidth
+              const side = x + port.width > rect.width - 8 ? 'left' : 'right'
+              if (side !== port.side) {
+                port.side = side
+                node.dataset.side = side
+              }
             }
             if (shown !== port.shown) {
               port.shown = shown
@@ -464,7 +474,7 @@ function VoyageGlobe({ lanes, voyage, className = '', children }) {
     // Lanes are fixed for the life of the component; `voyage` is a mutable
     // object read every frame, never a dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [built])
+  }, [built, zoom])
 
   return (
     <div ref={hostRef} className={`voyage-globe ${className}`} data-mode={mode}>

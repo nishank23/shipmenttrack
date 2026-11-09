@@ -1,19 +1,22 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { deleteDoc, doc, getDoc } from 'firebase/firestore'
 import { Icon } from '@iconify/react'
 import { useReducedMotion } from 'motion/react'
 import { db } from '../../firebase'
+import VoyageGlobe from '../components/VoyageGlobe'
 import useAuth from '../hooks/useAuth'
 import { getRunwayEta, hasTimedEta } from '../lib/arrivalRunway'
 import { getCarrierBadgeClass, getCarrierBrand } from '../lib/carriers'
 import { gsap, useSmoothScroll } from '../lib/scrollMotion'
 import { getCheckpointHistory, getPlannedCheckpointGroups, getRouteCheckpoints, toTrackingDate } from '../lib/shipmentDetail'
 import { describeArchiveReason, setShipmentArchived, subscribeShipmentTracking } from '../lib/tracking'
+import { getVoyageRoute } from '../lib/voyageRoute'
 import './ShipmentDetail.css'
 
 const dateFormat = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium' })
 const dateTimeFormat = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short' })
+const shortDate = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' })
 const currencyFormat = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' })
 const recentCount = 4
 const emptyCache = { data: null, unavailable: false }
@@ -116,6 +119,90 @@ function RouteSummary({ reported }) {
       {first?.container && last.container && first.container !== last.container && (
         <p className="sd-meta sd-route__note">Locations may be from different containers on this B/L.</p>
       )}
+    </section>
+  )
+}
+
+function voyageHeadline(route) {
+  const here = route.current.port.name
+  const destination = route.stops.at(-1).name
+  switch (route.status) {
+    case 'arrived': return `Arrived at ${here}`
+    case 'in-transit': return `Sailing from ${here} to ${route.next.port.name}`
+    case 'live': return `At sea, bound for ${route.next.port.name}`
+    case 'planned': return `Bound for ${destination}`
+    default: return `At ${here}`
+  }
+}
+
+/**
+ * Where the box is on its voyage, on the globe. The route is the ports named
+ * in carrier events; the vessel sits at the latest one (or part-way along the
+ * leg after a departure) until a live position is available.
+ */
+function VoyagePanel({ history, eta, position }) {
+  const root = useRef(null)
+  const reducedMotion = useReducedMotion()
+  const [voyage] = useState(() => ({ lane: 0, progress: 0 }))
+  const route = getVoyageRoute(history, { eta, now: Date.now(), position })
+  const routeKey = route ? `${route.lane.id}|${route.lane.waypoints.at(-1).label}|${route.progress.toFixed(4)}` : ''
+  // A new lane rebuilds the globe scene, so it changes only with the route.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const lanes = useMemo(() => (route ? [route.lane] : null), [routeKey])
+
+  useLayoutEffect(() => {
+    if (!route) return undefined
+    if (reducedMotion) {
+      gsap.set(voyage, { progress: route.progress })
+      return undefined
+    }
+    const context = gsap.context(() => {
+      gsap.timeline()
+        .fromTo(voyage, { progress: 0 }, { progress: route.progress, duration: 2.8, ease: 'power2.inOut' }, 0.35)
+        .from('[data-voyage-reveal]', { y: 10, opacity: 0, stagger: 0.06, duration: 0.5, ease: 'power2.out', clearProps: 'transform,opacity' }, 0)
+    }, root)
+    return () => context.revert()
+    // Replays only when the route itself changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeKey, reducedMotion])
+
+  if (!route) return <RouteSummary reported={history.reported} />
+
+  const latest = route.latest
+  return (
+    <section ref={root} className="sd-panel sd-voyage" aria-labelledby="sd-voyage-title">
+      <div className="sd-voyage__info">
+        <h2 id="sd-voyage-title" data-voyage-reveal>Voyage</h2>
+        <p className="sd-voyage__status" data-voyage-reveal>{voyageHeadline(route)}</p>
+        {latest && (
+          <p className="sd-voyage__event" data-voyage-reveal>
+            {latest.title}{latest.occurredAt && <> · <DateLabel date={latest.occurredAt} /></>}
+          </p>
+        )}
+        <ol className="sd-voyage__stops" role="list" aria-label="Ports on this voyage">
+          {route.stops.map((stop, index) => (
+            <li key={stop.name} data-state={stop.state} data-voyage-reveal>
+              <span className="sd-voyage__dot" aria-hidden="true" />
+              <strong>{stop.name}</strong>
+              <span className="sd-meta">
+                {stop.at
+                  ? `${stop.state === 'planned' ? (index === route.stops.length - 1 ? 'ETA ' : 'Planned ') : ''}${shortDate.format(stop.at)}`
+                  : stop.state === 'planned' ? 'Planned' : ''}
+              </span>
+            </li>
+          ))}
+        </ol>
+        <p className="sd-meta sd-voyage__note" data-voyage-reveal>
+          {route.status === 'live'
+            ? 'Vessel position from live AIS data.'
+            : 'Vessel position is estimated from the latest carrier event. Arcs join ports and are not the sailing path.'}
+        </p>
+      </div>
+      <div className="sd-voyage__stage">
+        <VoyageGlobe lanes={lanes} voyage={voyage} zoom={route.zoom} className="sd-voyage__globe">
+          <div className="sd-voyage__fallback" aria-hidden="true" />
+        </VoyageGlobe>
+      </div>
     </section>
   )
 }
@@ -397,7 +484,7 @@ function ShipmentDetailPage({ shipmentId, uid }) {
       {error && <p className="sd-error" role="alert">{error}</p>}
 
       <div className="sd-body">
-        <RouteSummary reported={history.reported} />
+        <VoyagePanel history={history} eta={eta} position={shipment.vesselPosition} />
         <TrackingHistory history={history} containers={containers} cache={cache ?? emptyCache} pending={!cache} />
         <ShipmentFacts shipment={shipment} invoice={invoice} containerNumbers={containers} busy={Boolean(busy)} onDelete={handleDelete} />
       </div>
