@@ -13,9 +13,9 @@ const departureEvent = /\b(?:load(?:ed|ing)|depart(?:ed|ure)?|sail(?:ed|ing)?|on
 const VESSELFINDER_URL = 'https://api.vesselfinder.com/vessels'
 
 /**
- * The vessel the box is on now: the IMO on the latest actual event, when that
- * event is a load or departure. Null while the box is ashore, or when the
- * carrier names no IMO.
+ * The vessel the box is on now, from the latest actual event when that event
+ * is a load or departure: { name, voyage, imo } (imo is '' for carriers that
+ * name only the vessel). Null while the box is ashore.
  */
 export function getVesselAtSea(events) {
   const actual = (Array.isArray(events) ? events : [])
@@ -23,7 +23,9 @@ export function getVesselAtSea(events) {
     .sort((left, right) => toTime(left.occurredAt) - toTime(right.occurredAt))
   const latest = actual.at(-1)
   if (!latest || !departureEvent.test(latest.title || '')) return null
-  return /^\d{7}$/.test(latest.vesselImo || '') ? { imo: latest.vesselImo } : null
+  const imo = /^\d{7}$/.test(latest.vesselImo || '') ? latest.vesselImo : ''
+  const name = String(latest.vessel || '').trim()
+  return imo || name ? { name, voyage: String(latest.voyage || '').trim(), imo } : null
 }
 
 /**

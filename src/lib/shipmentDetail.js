@@ -23,6 +23,8 @@ function normalizeEvent(raw, index, now) {
     title, occurredAt, estimated, container,
     description: String(event.description ?? event.message ?? event.details ?? '').trim(),
     location: String(event.location ?? event.port ?? event.place ?? '').trim(),
+    vessel: String(event.vessel ?? '').trim(),
+    voyage: String(event.voyage ?? '').trim(),
   }
 }
 

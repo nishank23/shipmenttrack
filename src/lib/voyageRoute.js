@@ -118,9 +118,16 @@ export function getVoyageRoute(history, { eta = null, now = Date.now(), position
     ? fractions[index + 1]
     : fractions[index] + ((fractions[index + 1] ?? fractions[index]) - fractions[index]) * leg
 
+  // The vessel the box is on (or last sailed on), and the next one planned.
+  const vesselOf = (event) => (event?.vessel ? { name: event.vessel, voyage: event.voyage || '' } : null)
+  const lastVessel = vesselOf(history.reported.find((event) => event.vessel))
+  const nextVessel = vesselOf(history.planned.find((event) => event.vessel && event.vessel !== lastVessel?.name))
+
   return {
     lane,
     progress,
+    vessel: lastVessel,
+    nextVessel: status === 'arrived' ? null : nextVessel,
     zoom,
     status,
     latest,

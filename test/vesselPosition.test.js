@@ -6,13 +6,15 @@ const event = (title, occurredAt, extra = {}) => ({ title, occurredAt: new Date(
 
 test('the vessel is looked up only while the box is at sea', () => {
   const loaded = event('Export Loaded on Vessel', '2026-10-31', { vesselImo: '9328493' })
-  assert.deepEqual(getVesselAtSea([event('Export received at CY', '2026-10-26'), loaded]), { imo: '9328493' })
+  assert.deepEqual(getVesselAtSea([event('Export received at CY', '2026-10-26'), loaded]), { name: '', voyage: '', imo: '9328493' })
   // Discharged at transshipment: ashore.
   assert.equal(getVesselAtSea([loaded, event('Full Transshipment Discharged', '2026-11-05', { vesselImo: '9328493' })]), null)
   // "Unloaded" is not a departure.
   assert.equal(getVesselAtSea([event('Unloaded from vessel', '2026-11-05', { vesselImo: '9328493' })]), null)
   // Planned moves don't count, and carriers without an IMO give nothing.
-  assert.deepEqual(getVesselAtSea([loaded, { ...event('Transshipment Loaded', '2026-11-13', { vesselImo: '9224324' }), estimated: true }]), { imo: '9328493' })
+  assert.equal(getVesselAtSea([loaded, { ...event('Transshipment Loaded', '2026-11-13', { vesselImo: '9224324' }), estimated: true }]).imo, '9328493')
+  // Carriers without an IMO still name the vessel and voyage.
+  assert.deepEqual(getVesselAtSea([event('Vessel Loading', '2026-03-20', { vessel: 'KOTA NIPAH', voyage: 'KNPH0177W' })]), { name: 'KOTA NIPAH', voyage: 'KNPH0177W', imo: '' })
   assert.equal(getVesselAtSea([event('Vessel Loading', '2026-03-20')]), null)
 })
 

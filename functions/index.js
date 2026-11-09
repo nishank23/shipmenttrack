@@ -1192,6 +1192,8 @@ function normalizeEvents(events) {
         description: normalizeString(event?.description || ''),
         location: normalizeString(event?.location || ''),
         container: normalizeString(event?.container || ''),
+        vessel: normalizeString(event?.vessel || ''),
+        voyage: normalizeString(event?.voyage || ''),
         vesselImo: normalizeString(event?.vesselImo || ''),
         occurredAt: occurredAt ? Timestamp.fromDate(occurredAt) : null,
         // Carrier timelines mix actual and planned moves. Future dates are planned,
@@ -1213,6 +1215,8 @@ function normalizeEvents(events) {
 async function getVesselPositionUpdate(events, blNo) {
   const vessel = getVesselAtSea(events)
   if (!vessel) return { vesselPosition: FieldValue.delete() }
+  // VesselFinder looks vessels up by IMO only.
+  if (!vessel.imo) return {}
 
   const apiKey = normalizeString(process.env.VESSELFINDER_API_KEY)
   if (!apiKey) return {}
