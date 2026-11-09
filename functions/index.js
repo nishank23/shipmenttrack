@@ -10,6 +10,8 @@ import {
   extractTrackingPayload,
   extractPilContainers,
   extractPilContainerTracking,
+  extractEvergreenMoveRequests,
+  extractEvergreenContainerMoves,
   mergeTrackingResults,
 } from './lib/trackingExtractors.js'
 import { getShipmentNotificationKind } from './lib/notificationPreferences.js'
@@ -1059,11 +1061,40 @@ async function scrapeEvergreen(blNo) {
     },
   )
 
-  return extractTrackingPayload({
+  const blResult = extractTrackingPayload({
     carrier: 'EVERGREEN',
     payload: response.data,
     blNo,
   })
+
+  // The B/L page only has each container's current status; its moves (with
+  // ports, transshipments and vessels) come from one request per container.
+  const { fields, containers } = extractEvergreenMoveRequests(response.data)
+  const moves = []
+  for (const cntrNo of containers) {
+    try {
+      const moveResponse = await axios.post(
+        'https://ct.shipmentlink.com/servlet/TDB1_CargoTracking.do',
+        new URLSearchParams({ ...fields, cntr_no: cntrNo }).toString(),
+        {
+          timeout: HTTP_TIMEOUT_MS,
+          headers: {
+            ...defaultHeaders,
+            Origin: 'https://ct.shipmentlink.com',
+            Referer: 'https://ct.shipmentlink.com/servlet/TDB1_CargoTracking.do',
+            'content-type': 'application/x-www-form-urlencoded',
+          },
+        },
+      )
+      moves.push(extractEvergreenContainerMoves(moveResponse.data, blNo, cntrNo))
+    } catch (moveError) {
+      warn(`Evergreen moves failed for container ${cntrNo}`, moveError)
+    }
+  }
+
+  const movedEvents = moves.flatMap((result) => result.events)
+  if (!movedEvents.length) return blResult
+  return { ...mergeTrackingResults('EVERGREEN', blNo, moves), eta: blResult.eta }
 }
 
 async function scrapePil(blNo) {
