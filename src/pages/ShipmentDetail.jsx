@@ -221,7 +221,12 @@ function VoyagePanel({ history, eta, position }) {
         </ol>
         <p className="sd-meta sd-voyage__note" data-voyage-reveal>
           {route.status === 'live'
-            ? aisNote(position)
+            ? <>
+                {aisNote(position)}
+                {position?.source === 'shiptrail' && (
+                  <> Data: <a href={position.url || 'https://shiptrail.io'} target="_blank" rel="noreferrer">Shiptrail</a>.</>
+                )}
+              </>
             : 'Vessel position is estimated from the latest carrier event. Arcs join ports and are not the sailing path.'}
         </p>
       </div>

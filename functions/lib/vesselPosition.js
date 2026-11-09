@@ -1,9 +1,9 @@
 /**
- * Live vessel position for a shipment, from VesselFinder's AIS API
- * (https://api.vesselfinder.com/docs/vessels.html).
- *
- * VesselFinder looks vessels up by IMO or MMSI only, so this works for
- * carriers whose events name the vessel's IMO (MSC today).
+ * Live vessel position for a shipment, from one of two AIS sources:
+ * - VesselFinder (https://api.vesselfinder.com/docs/vessels.html), paid,
+ *   looked up by IMO, which only MSC events give;
+ * - Shiptrail (https://shiptrail.io/agents), free, through its MCP endpoint,
+ *   looked up by vessel name. Its terms ask for a credit and a link back.
  */
 
 // A box is at sea after it is loaded or the vessel departs, until the next
@@ -25,7 +25,9 @@ export function getVesselAtSea(events) {
   if (!latest || !departureEvent.test(latest.title || '')) return null
   const imo = /^\d{7}$/.test(latest.vesselImo || '') ? latest.vesselImo : ''
   const name = String(latest.vessel || '').trim()
-  return imo || name ? { name, voyage: String(latest.voyage || '').trim(), imo } : null
+  if (!imo && !name) return null
+  // A position fix older than the departure is from an earlier voyage.
+  return { name, voyage: String(latest.voyage || '').trim(), imo, since: new Date(toTime(latest.occurredAt)) }
 }
 
 /**
@@ -71,6 +73,70 @@ export async function fetchVesselPosition({ imo, apiKey, http, timeout = 15000 }
     throw new Error(`VesselFinder: ${data.error}`)
   }
   return toVesselPosition(Array.isArray(data) ? data[0] : null)
+}
+
+const SHIPTRAIL_URL = 'https://shiptrail.io/mcp'
+
+const normalizeName = (value) => String(value || '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim()
+
+async function callShiptrail(http, tool, args, timeout) {
+  const response = await http.post(
+    SHIPTRAIL_URL,
+    { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: tool, arguments: args } },
+    {
+      timeout,
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+    },
+  )
+  const { result, error } = response.data || {}
+  if (error || result?.isError) {
+    throw new Error(`Shiptrail ${tool}: ${error?.message || result?.content?.[0]?.text || 'error'}`)
+  }
+  return result?.structuredContent ?? null
+}
+
+/**
+ * Latest position for a vessel named by the carrier, from Shiptrail. Only an
+ * exact name match counts (Shiptrail also returns look-alike names), the IMO
+ * must agree when the carrier gave one, and the fix must be newer than the
+ * departure. `knownMmsi` (from the last lookup of the same vessel) skips the
+ * search. Returns null when there is no usable fix.
+ */
+export async function fetchShiptrailPosition({ vessel, knownMmsi = '', http, timeout = 15000 }) {
+  let mmsi = /^\d{9}$/.test(String(knownMmsi)) ? Number(knownMmsi) : null
+  if (!mmsi) {
+    const found = await callShiptrail(http, 'search_ships', { query: vessel.name || vessel.imo, limit: 5 }, timeout)
+    const match = (found?.ships || []).find(
+      (ship) => !ship.nearMatch && normalizeName(ship.name) === normalizeName(vessel.name),
+    )
+    if (!match) return null
+    mmsi = match.mmsi
+  }
+
+  const ship = await callShiptrail(http, 'get_ship', { mmsi }, timeout)
+  if (!ship) return null
+  if (vessel.imo && ship.imo && String(ship.imo) !== vessel.imo) return null
+
+  const at = new Date(ship.position?.at)
+  if (Number.isNaN(at.getTime()) || (vessel.since && at < vessel.since)) return null
+  const lat = Number(ship.position?.lat)
+  const lon = Number(ship.position?.lon)
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null
+  const number = (value) => (Number.isFinite(Number(value)) ? Number(value) : null)
+
+  return {
+    lat,
+    lon,
+    speed: number(ship.speedKn),
+    course: number(ship.courseDeg),
+    vesselName: String(ship.name || vessel.name),
+    imo: ship.imo ? String(ship.imo) : vessel.imo || '',
+    mmsi: String(ship.mmsi || mmsi),
+    destination: String(ship.voyage?.boundFor?.name || ship.voyage?.destination || ''),
+    reportedAt: at,
+    source: 'shiptrail',
+    url: String(ship.url || ''),
+  }
 }
 
 function toTime(value) {

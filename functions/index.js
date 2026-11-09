@@ -14,7 +14,7 @@ import {
   extractEvergreenContainerMoves,
   mergeTrackingResults,
 } from './lib/trackingExtractors.js'
-import { fetchVesselPosition, getVesselAtSea } from './lib/vesselPosition.js'
+import { fetchShiptrailPosition, fetchVesselPosition, getVesselAtSea } from './lib/vesselPosition.js'
 import { getShipmentNotificationKind } from './lib/notificationPreferences.js'
 
 initializeApp();
@@ -167,6 +167,7 @@ export const lookupTracking = onCall(
     }
 
     let shipmentRef = null
+    let previousPosition = null
 
     if (shipmentId) {
       shipmentRef = db.collection('shipments').doc(shipmentId)
@@ -175,6 +176,7 @@ export const lookupTracking = onCall(
       if (!shipmentSnapshot.exists || shipmentSnapshot.data()?.uid !== uid) {
         throw new HttpsError('permission-denied', 'Shipment not found.')
       }
+      previousPosition = shipmentSnapshot.data()?.vesselPosition ?? null
     }
 
     let liveResult
@@ -225,7 +227,7 @@ export const lookupTracking = onCall(
             eventCount: events.length,
             trackingStatus: 'live',
             trackingError: null,
-            ...(await getVesselPositionUpdate(events, blNo)),
+            ...(await getVesselPositionUpdate(events, blNo, previousPosition)),
           },
           { merge: true },
         ),
@@ -864,7 +866,7 @@ async function resolveTrackingInfo({ shipmentId, blNo, carrier, firestoreEta, fo
         eventCount: events.length,
         trackingStatus: 'live',
         trackingError: null,
-        ...(await getVesselPositionUpdate(events, blNo)),
+        ...(await getVesselPositionUpdate(events, blNo, shipmentData.vesselPosition)),
       },
       { merge: true },
     )
@@ -1212,23 +1214,27 @@ function normalizeEvents(events) {
  * once the box is ashore; left as it was when the lookup can't run (no
  * VESSELFINDER_API_KEY, no IMO from the carrier) or fails.
  */
-async function getVesselPositionUpdate(events, blNo) {
+async function getVesselPositionUpdate(events, blNo, previous = null) {
   const vessel = getVesselAtSea(events)
   if (!vessel) return { vesselPosition: FieldValue.delete() }
-  // VesselFinder looks vessels up by IMO only.
-  if (!vessel.imo) return {}
 
-  const apiKey = normalizeString(process.env.VESSELFINDER_API_KEY)
-  if (!apiKey) return {}
+  const vesselFinderKey = normalizeString(process.env.VESSELFINDER_API_KEY)
+  const sameVessel = previous?.vesselName && normalizeString(previous.vesselName).toUpperCase() === vessel.name.toUpperCase()
 
   try {
-    const position = await fetchVesselPosition({
-      imo: vessel.imo,
-      apiKey,
-      http: axios,
-      timeout: HTTP_TIMEOUT_MS,
-    })
-    if (!position) return {}
+    // VesselFinder when there's a key and an IMO; otherwise Shiptrail by name.
+    const position = vesselFinderKey && vessel.imo
+      ? await fetchVesselPosition({ imo: vessel.imo, apiKey: vesselFinderKey, http: axios, timeout: HTTP_TIMEOUT_MS })
+      : vessel.name
+        ? await fetchShiptrailPosition({
+            vessel,
+            knownMmsi: sameVessel ? previous.mmsi : '',
+            http: axios,
+            timeout: HTTP_TIMEOUT_MS,
+          })
+        : null
+    // No fix for this voyage: drop one left over from an earlier vessel.
+    if (!position) return sameVessel ? {} : { vesselPosition: FieldValue.delete() }
     return {
       vesselPosition: {
         ...position,
