@@ -39,7 +39,7 @@ function buildResult(source, blNo, eta = null, events = []) {
   }
 }
 
-function buildEvent({ id, title, description, location, container, occurredAt, vesselImo }) {
+function buildEvent({ id, title, description, location, container, occurredAt, vessel, voyage, vesselImo }) {
   return {
     id: normalizeString(id),
     title: normalizeString(title) || 'Status update',
@@ -47,7 +47,10 @@ function buildEvent({ id, title, description, location, container, occurredAt, v
     location: normalizeString(location),
     container: normalizeString(container),
     occurredAt: parseDateCandidate(occurredAt),
-    // Only MSC names the vessel's IMO; it keys the live AIS position lookup.
+    // The vessel the move was on, when the carrier names one. Every carrier
+    // gives a name and voyage; only MSC also gives the IMO.
+    vessel: normalizeString(vessel),
+    voyage: normalizeString(voyage),
     vesselImo: /^\d{7}$/.test(normalizeString(vesselImo)) ? normalizeString(vesselImo) : '',
   }
 }
@@ -111,6 +114,10 @@ function extractMscTracking(payload, blNo) {
         location: event?.Location,
         container: containerNo,
         occurredAt: event?.Date,
+        // Detail is [vessel, voyage] on vessel moves, [EMPTY]/[LADEN] otherwise.
+        ...(event?.Vessel?.IMO && Array.isArray(event?.Detail)
+          ? { vessel: event.Detail[0], voyage: event.Detail[1] }
+          : {}),
         vesselImo: event?.Vessel?.IMO,
       })
     })
@@ -160,6 +167,10 @@ function extractOneTracking(payload, blNo) {
   containers.forEach((container) => {
     const containerNo = normalizeString(container?.containerNo)
     const vessel = normalizeString(container?.vesselVoyage?.vesselName)
+    const voyage = normalizeString(
+      container?.vesselVoyage?.outboundConsortiumVoyage ||
+        [container?.vesselVoyage?.voyageNo, container?.vesselVoyage?.directionCode].filter(Boolean).join(''),
+    )
     const countryByPlace = new Map(
       [container?.por, container?.pod].filter(Boolean).map((place) => [
         normalizeString(place.locationName).toUpperCase(),
@@ -185,8 +196,10 @@ function extractOneTracking(payload, blNo) {
         buildEvent({
           id: `one-${containerNo || 'bl'}-${event.matrixId}-${index}`,
           title: actual ? name : `Expected ${name.toLowerCase()}`,
-          description: vessel,
+          description: [vessel, voyage].filter(Boolean).join(' · '),
           location: placeName(event?.locationName, event?.countryCode),
+          vessel,
+          voyage,
           container: containerNo,
           occurredAt,
         }),
@@ -309,6 +322,9 @@ export function extractEvergreenContainerMoves(html, blNo, cntrNo) {
         id: `evergreen-${cntrNo}-${index}`,
         title: cells[1],
         description: cells[3] || '',
+        // "EVER BRACE 120W": the last word is the voyage.
+        vessel: cells[3]?.replace(/\s+\S+$/, '') || '',
+        voyage: cells[3]?.match(/\S+$/)?.[0] || '',
         location: toPlace(cells[2]),
         container: cntrNo,
         occurredAt,
@@ -397,6 +413,8 @@ function extractPilTracking(payload, blNo) {
         description,
         location: locode ? `${name}, ${locode.slice(0, 2)}` : name,
         occurredAt: parseDateCandidate(arrival),
+        vessel,
+        voyage,
       }),
     )
     eta = parseDateCandidate(nextDate) || eta
@@ -463,16 +481,17 @@ export function extractPilContainerTracking(payload, blNo, cntrNo) {
     // Skips the header row ("Event Date | Event Name | ...") too.
     if (!eventName || !parsedDate) return
 
-    const vessel = [cleanText($(cells[1]).text()), cleanText($(cells[2]).text())]
-      .filter(Boolean)
-      .join(' · ')
+    const vessel = cleanText($(cells[1]).text())
+    const voyage = cleanText($(cells[2]).text())
 
     events.push(
       buildEvent({
         id: `pil-${cntrNo}-${index}`,
         title: eventName,
-        description: vessel,
+        description: [vessel, voyage].filter(Boolean).join(' · '),
         location,
+        vessel,
+        voyage,
         container: cntrNo,
         occurredAt: parsedDate,
       }),

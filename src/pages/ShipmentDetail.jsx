@@ -135,6 +135,16 @@ function voyageHeadline(route) {
   }
 }
 
+// "On X-PRESS KAILASH, voyage 047W · next MSC CAIRO IV, voyage FH646A"
+function vesselLabel(route) {
+  const named = ({ name, voyage }) => (voyage ? `${name}, voyage ${voyage}` : name)
+  const lead = route.status === 'in-transit' || route.status === 'live' ? 'On'
+    : route.status === 'arrived' ? 'Arrived on' : 'Last vessel'
+  return [`${lead} ${named(route.vessel)}`, route.nextVessel ? `next ${named(route.nextVessel)}` : '']
+    .filter(Boolean)
+    .join(' · ')
+}
+
 // "Live AIS position of MSC CAIRO IV, 12.4 kn, 3 h ago."
 function aisNote(position) {
   const reportedAt = position?.reportedAt?.toDate?.() ?? null
@@ -191,6 +201,11 @@ function VoyagePanel({ history, eta, position }) {
             {latest.title}{latest.occurredAt && <> · <DateLabel date={latest.occurredAt} /></>}
           </p>
         )}
+        {route.vessel && (
+          <p className="sd-meta sd-voyage__vessel" data-voyage-reveal>
+            {vesselLabel(route)}
+          </p>
+        )}
         <ol className="sd-voyage__stops" role="list" aria-label="Ports on this voyage">
           {route.stops.map((stop, index) => (
             <li key={stop.name} data-state={stop.state} data-voyage-reveal>
@@ -206,7 +221,12 @@ function VoyagePanel({ history, eta, position }) {
         </ol>
         <p className="sd-meta sd-voyage__note" data-voyage-reveal>
           {route.status === 'live'
-            ? aisNote(position)
+            ? <>
+                {aisNote(position)}
+                {position?.source === 'shiptrail' && (
+                  <> Data: <a href={position.url || 'https://shiptrail.io'} target="_blank" rel="noreferrer">Shiptrail</a>.</>
+                )}
+              </>
             : 'Vessel position is estimated from the latest carrier event. Arcs join ports and are not the sailing path.'}
         </p>
       </div>

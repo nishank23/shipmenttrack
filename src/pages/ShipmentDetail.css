@@ -293,6 +293,13 @@
   line-height: 1.45;
 }
 
+.sd-voyage__vessel {
+  margin-top: 6px;
+  color: var(--stage-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .sd-voyage__stops {
   position: relative;
   display: grid;
