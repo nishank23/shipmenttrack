@@ -105,9 +105,11 @@ function EtaLane({ shipments, now, selectedId, onSelect, from = -21, to = 35 }) 
       timeline
         .from('[data-lane-today]', { scaleY: 0, transformOrigin: 'bottom', duration: 0.9 })
         .from('[data-lane-tick]', { opacity: 0, y: 6, stagger: 0.03, duration: 0.6 }, 0.1)
+      // Animate the inner glide, not the button: GSAP folds the button's CSS
+      // `translate` (its edge anchoring) into its own transform and loses it.
       root.querySelectorAll('[data-lane-item]').forEach((node, index) => {
         const offset = ((todayLeft - Number(node.dataset.left)) / 100) * width
-        timeline.from(node, { x: offset, opacity: 0, duration: 1.3 }, 0.25 + index * 0.07)
+        timeline.from(node.querySelector('[data-lane-glide]'), { x: offset, opacity: 0, duration: 1.3 }, 0.25 + index * 0.07)
       })
     }, root)
     return () => ctx.revert()
@@ -157,12 +159,14 @@ function EtaLane({ shipments, now, selectedId, onSelect, from = -21, to = 35 }) 
               onBlur={() => setHoverId('')}
               onClick={() => onSelect(item.id)}
             >
-              <span className="eta-lane__label">
-                {item.clipped === 'before' ? '‹ ' : ''}
-                {item.label}
-                {item.clipped === 'after' ? ' ›' : ''}
+              <span data-lane-glide className="eta-lane__glide">
+                <span className="eta-lane__label">
+                  {item.clipped === 'before' ? '‹ ' : ''}
+                  {item.label}
+                  {item.clipped === 'after' ? ' ›' : ''}
+                </span>
+                <span className="eta-lane__dot" data-bucket={item.bucket} />
               </span>
-              <span className="eta-lane__dot" data-bucket={item.bucket} />
             </button>
           )
         })}
