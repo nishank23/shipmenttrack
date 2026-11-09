@@ -39,7 +39,7 @@ function buildResult(source, blNo, eta = null, events = []) {
   }
 }
 
-function buildEvent({ id, title, description, location, container, occurredAt }) {
+function buildEvent({ id, title, description, location, container, occurredAt, vesselImo }) {
   return {
     id: normalizeString(id),
     title: normalizeString(title) || 'Status update',
@@ -47,6 +47,8 @@ function buildEvent({ id, title, description, location, container, occurredAt })
     location: normalizeString(location),
     container: normalizeString(container),
     occurredAt: parseDateCandidate(occurredAt),
+    // Only MSC names the vessel's IMO; it keys the live AIS position lookup.
+    vesselImo: /^\d{7}$/.test(normalizeString(vesselImo)) ? normalizeString(vesselImo) : '',
   }
 }
 
@@ -109,6 +111,7 @@ function extractMscTracking(payload, blNo) {
         location: event?.Location,
         container: containerNo,
         occurredAt: event?.Date,
+        vesselImo: event?.Vessel?.IMO,
       })
     })
   })
@@ -151,58 +154,185 @@ function extractOneTracking(payload, blNo) {
     return buildResult('ONE', blNo)
   }
 
-  const allEvents = containers.flatMap((container) =>
-    (Array.isArray(container?.cargoEvents) ? container.cargoEvents : []).map(
-      (event) => ({ event, containerNo: container?.containerNo }),
-    ),
-  )
+  const events = []
+  const arrivals = []
 
-  /**
-   * ETA Priority:
-   *
-   * E105 = Final arrival / destination arrival
-   * E089 = Before arrival fallback
-   *
-   * Prefer the earliest matching arrival date.
-   */
-  const etaCandidates = allEvents
-    .filter(({ event }) => event?.matrixId === 'E105' || event?.matrixId === 'E089')
-    .map(({ event }) => parseDateCandidate(event?.date || event?.localPortDate))
-    .filter(Boolean)
-    .sort((a, b) => a.getTime() - b.getTime())
+  containers.forEach((container) => {
+    const containerNo = normalizeString(container?.containerNo)
+    const vessel = normalizeString(container?.vesselVoyage?.vesselName)
+    const countryByPlace = new Map(
+      [container?.por, container?.pod].filter(Boolean).map((place) => [
+        normalizeString(place.locationName).toUpperCase(),
+        normalizeString(place.code).slice(0, 2),
+      ]),
+    )
+    const placeName = (name, countryCode) => {
+      const place = normalizeString(name)
+      const country = normalizeString(countryCode) || countryByPlace.get(place.toUpperCase())
+      return place && country ? `${place}, ${country}` : place
+    }
 
-  const events = allEvents.map(({ event, containerNo }, index) =>
-    buildEvent({
-      id: `one-${containerNo || 'bl'}-${event?.matrixId || 'event'}-${index}`,
-      title:
-        event?.eventName ||
-        event?.eventDescription ||
-        event?.statusName ||
-        event?.description ||
-        event?.matrixId,
-      description: [event?.vesselName, event?.trigger].filter(Boolean).join(' · '),
-      location: event?.locationName,
-      container: containerNo,
-      occurredAt: event?.date || event?.localPortDate,
-    }),
-  )
+    const cargoEvents = Array.isArray(container?.cargoEvents) ? container.cargoEvents : []
+    cargoEvents.forEach((event, index) => {
+      const name = oneMilestones[event?.matrixId]
+      // Codes outside the map are deadlines (cut-off, last free day), not moves.
+      if (!name) return
+      const actual = normalizeString(event?.trigger).toUpperCase() === 'ACTUAL'
+      // `date` is UTC; `localPortDate` is port-local time with a misleading Z.
+      const occurredAt = parseDateCandidate(event?.date || event?.localPortDate)
 
-  return buildResult('ONE', blNo, etaCandidates[0] || null, events)
+      events.push(
+        buildEvent({
+          id: `one-${containerNo || 'bl'}-${event.matrixId}-${index}`,
+          title: actual ? name : `Expected ${name.toLowerCase()}`,
+          description: vessel,
+          location: placeName(event?.locationName, event?.countryCode),
+          container: containerNo,
+          occurredAt,
+        }),
+      )
+      if (event.matrixId === 'E089' && occurredAt) arrivals.push(occurredAt)
+    })
+
+    // The container's latest status is the only place ONE names
+    // post-arrival moves such as the empty return.
+    const latest = container?.latestEvent
+    if (latest?.eventName) {
+      events.push(
+        buildEvent({
+          id: `one-${containerNo || 'bl'}-latest`,
+          title: latest.eventName,
+          location: placeName(latest.locationName),
+          container: containerNo,
+          occurredAt: latest.date,
+        }),
+      )
+    }
+  })
+
+  // B/L ETA: the latest container arrival at the port of discharge.
+  const eta = arrivals.length ? new Date(Math.max(...arrivals.map((date) => date.getTime()))) : null
+
+  return buildResult('ONE', blNo, eta, events)
+}
+
+/**
+ * Milestone codes in ONE's cargoEvents, as ONE's own tracking page labels
+ * them. Other codes in that list (E105 demurrage last free day, E167 cargo
+ * cut-off) are deadlines and are skipped.
+ */
+const oneMilestones = {
+  E061: 'Vessel departure from port of loading',
+  E089: 'Vessel arrival at POD',
 }
 
 /* ------------------------------------------------------------------ */
 /* Evergreen (HTML)                                                    */
 /* ------------------------------------------------------------------ */
 
+/**
+ * The B/L page lists each container's current status only. Without the
+ * per-container moves this is what we keep: one status event per container,
+ * at the port of discharge.
+ */
 export function extractEvergreenTracking(html, blNo) {
   const $ = load(String(html || ''))
+  const { containers, pod } = extractEvergreenBl($)
 
   return buildResult(
     'EVERGREEN',
     blNo,
     parseDateCandidate(extractEvergreenEta($)),
-    extractEventsFromHtml($, 'evergreen'),
+    containers
+      .filter((container) => container.status)
+      .map((container) =>
+        buildEvent({
+          id: `evergreen-${container.number}-status`,
+          title: container.status,
+          location: pod,
+          container: container.number,
+          occurredAt: parseEvergreenDate(container.date),
+        }),
+      ),
   )
+}
+
+/**
+ * Everything needed to ask Evergreen for each container's moves: the
+ * container numbers and the hidden fields of the page's frmCntrMove form.
+ */
+export function extractEvergreenMoveRequests(html) {
+  const source = String(html || '')
+  // Read from the raw markup: the form sits inside a table, so an HTML
+  // parser closes it before its inputs.
+  const form = source.match(/<form[^>]*name="frmCntrMove"[\s\S]*?<\/form>/i)?.[0] || ''
+  const fields = {}
+  for (const [input] of form.matchAll(/<input[^>]*>/gi)) {
+    const name = input.match(/name="([^"]*)"/i)?.[1]
+    if (name && name !== 'cntr_no') fields[name] = input.match(/value="([^"]*)"/i)?.[1] || ''
+  }
+  return { fields, containers: extractEvergreenBl(load(source)).containers.map((container) => container.number) }
+}
+
+function extractEvergreenBl($) {
+  const containers = []
+  let pod = ''
+
+  $('tr').each((_, row) => {
+    const cells = $(row).children('td, th').map((__, cell) => cleanText($(cell).text())).get()
+    const podIndex = cells.indexOf('Port of Discharge')
+    if (podIndex !== -1 && cells[podIndex + 1]) pod = toPlace(cells[podIndex + 1])
+
+    const number = cells[0]?.match(/^([A-Z]{4}\d{7})\b/)?.[1]
+    // Container rows: number, size, seal, service, quantity, method, VGM, status, date.
+    if (number && cells.length >= 9 && parseEvergreenDate(cells.at(-1))) {
+      containers.push({ number, status: cells.at(-2), date: cells.at(-1) })
+    }
+  })
+
+  return { containers, pod }
+}
+
+/** One container's moves page: Date | Container Moves | Location | Vessel Voyage. */
+export function extractEvergreenContainerMoves(html, blNo, cntrNo) {
+  const $ = load(String(html || ''))
+  const events = []
+
+  $('tr').each((index, row) => {
+    const cells = $(row).children('td').map((_, cell) => cleanText($(cell).text())).get()
+    if (cells.length < 3) return
+    const occurredAt = parseEvergreenDate(cells[0])
+    if (!occurredAt || !cells[1]) return
+
+    events.push(
+      buildEvent({
+        id: `evergreen-${cntrNo}-${index}`,
+        title: cells[1],
+        description: cells[3] || '',
+        location: toPlace(cells[2]),
+        container: cntrNo,
+        occurredAt,
+      }),
+    )
+  })
+
+  return buildResult('EVERGREEN', blNo, null, events)
+}
+
+const monthIndex = { JAN: 0, FEB: 1, MAR: 2, APR: 3, MAY: 4, JUN: 5, JUL: 6, AUG: 7, SEP: 8, OCT: 9, NOV: 10, DEC: 11 }
+
+/** Evergreen dates: "JUL-08-2026", optionally followed by "hh:mm". */
+function parseEvergreenDate(value) {
+  const match = String(value || '').match(/\b([A-Z]{3})-(\d{1,2})-(\d{4})(?:\s+(\d{1,2}):(\d{2}))?/i)
+  const month = match && monthIndex[match[1].toUpperCase()]
+  if (month === undefined || month === null) return null
+  const [, , day, year, hours = '12', minutes = '0'] = match
+  return new Date(Date.UTC(Number(year), month, Number(day), Number(hours), Number(minutes)))
+}
+
+/** "HAZIRA (IN)" -> "HAZIRA, IN", the form the rest of the app reads. */
+function toPlace(value) {
+  return cleanText(value).replace(/\s*\(([A-Z]{2})\)$/, ', $1')
 }
 
 export function extractEvergreenEta($) {
@@ -230,13 +360,13 @@ function extractPilTracking(payload, blNo) {
   const normalizedPayload = parsePotentialJson(payload)
 
   /**
-   * PIL response format:
-   * {
-   *   success: true,
-   *   data: "<html string>"
-   * }
+   * PIL response format: { success: true, data: "<html string>" }.
+   * Without the per-container traces, the B/L routing table is what we have:
+   * one row per vessel leg,
+   *   Arrival/Delivery | Location ("Load Port SURABAYA IDSUB") |
+   *   Vessel/Voyage | Next Location ("SGSIN 23-Mar-2026")
+   * The last row's next location is the destination, with its ETA.
    */
-
   const html = normalizedPayload?.data || ''
 
   if (!html || typeof html !== 'string') {
@@ -244,49 +374,39 @@ function extractPilTracking(payload, blNo) {
   }
 
   const $ = load(html)
-
-  let eta = null
   const events = []
+  let eta = null
 
-  /**
-   * We want:
-   * Discharge Port row
-   *
-   * Example:
-   * <td class="location">
-   *   Discharge Port
-   *   SINGAPORE
-   *   SGSIN
-   * </td>
-   *
-   * next-location contains:
-   * MZMPM
-   * 03-May-2026   ← ETA we want
-   */
+  const lines = (cell) =>
+    ($(cell).html() || '')
+      .split(/<br\s*\/?>/i)
+      .map((part) => cleanText(load(part).text()))
+      .filter(Boolean)
 
   $('tr.resultrow').each((index, row) => {
-    const locationText = cleanText($(row).find('.location').text())
+    const [role = 'Port', name = '', locode = ''] = lines($(row).find('.location'))
+    const [arrival] = lines($(row).find('.arrival-delivery'))
+    const [vessel = '', voyage = ''] = lines($(row).find('.vessel-voyage'))
+    const [nextLocode = '', nextDate = ''] = lines($(row).find('.next-location'))
+    const description = [vessel, voyage].filter(Boolean).join(' · ')
 
-    if (locationText.includes('Discharge Port')) {
-      const nextLocationText = cleanText($(row).find('.next-location').text())
-
-      /**
-       * Example:
-       * "MZMPM 03-May-2026"
-       */
-
-      const dateMatch = nextLocationText.match(/\d{2}-[A-Za-z]{3}-\d{4}/)
-
-      if (dateMatch?.[0]) {
-        eta = parseDateCandidate(dateMatch[0])
-      }
-
+    events.push(
+      buildEvent({
+        id: `pil-leg-${index}`,
+        title: role === 'Load Port' ? 'Vessel Loading' : `Vessel at ${role.toLowerCase()}`,
+        description,
+        location: locode ? `${name}, ${locode.slice(0, 2)}` : name,
+        occurredAt: parseDateCandidate(arrival),
+      }),
+    )
+    eta = parseDateCandidate(nextDate) || eta
+    if (index === $('tr.resultrow').length - 1 && nextLocode) {
       events.push(
         buildEvent({
-          id: `pil-discharge-${index}`,
-          title: 'Discharge Port',
-          description: nextLocationText,
-          location: locationText.replace('Discharge Port', ''),
+          id: `pil-destination`,
+          title: 'Estimated arrival',
+          description,
+          location: nextLocode,
           occurredAt: eta,
         }),
       )
@@ -305,7 +425,7 @@ export function extractPilContainers(payload) {
   const $ = load(html)
   const containers = new Set()
 
-  $('.next-location').each((_, el) => {
+  $('.cont-numb').each((_, el) => {
     const match = cleanText($(el).text()).match(/[A-Z]{4}\d{7}/)
 
     if (match) {
@@ -324,7 +444,8 @@ export function extractPilContainerTracking(payload, blNo, cntrNo) {
     return buildResult('PIL', blNo)
   }
 
-  const $ = load(html)
+  // The trace is bare <tr> rows; the HTML parser drops them outside a table.
+  const $ = load(`<table>${html}</table>`)
 
   let eta = null
   const events = []
@@ -334,28 +455,30 @@ export function extractPilContainerTracking(payload, blNo, cntrNo) {
 
     if (cells.length < 6) return
 
-    const eventDate = $(cells[3]).text().replace(/\*/g, '').trim()
-    const eventName = $(cells[4]).text().trim()
-    const location = $(cells[5]).text().trim()
+    const eventDate = cleanText($(cells[3]).text()).replace(/\*/g, '')
+    const eventName = cleanText($(cells[4]).text())
+    const location = cleanText($(cells[5]).text())
+    const parsedDate = parseDateCandidate(eventDate)
 
-    if (!eventName) return
+    // Skips the header row ("Event Date | Event Name | ...") too.
+    if (!eventName || !parsedDate) return
 
-    const parsedDate =
-      eventDate !== 'Information Not Available'
-        ? parseDateCandidate(eventDate)
-        : null
+    const vessel = [cleanText($(cells[1]).text()), cleanText($(cells[2]).text())]
+      .filter(Boolean)
+      .join(' · ')
 
     events.push(
       buildEvent({
         id: `pil-${cntrNo}-${index}`,
         title: eventName,
+        description: vessel,
         location,
         container: cntrNo,
         occurredAt: parsedDate,
       }),
     )
 
-    if (eventName === 'Vessel Discharge' && parsedDate) {
+    if (eventName === 'Vessel Discharge') {
       eta = parsedDate
     }
   })

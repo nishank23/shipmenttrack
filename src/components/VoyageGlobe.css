@@ -1,0 +1,42 @@
+/* Shared by every page that shows the voyage globe. Colours follow the
+   host's --stage-* tokens when it sets them. */
+.voyage-globe {
+  position: absolute;
+  inset: 0;
+}
+
+.voyage-globe canvas {
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+}
+
+.voyage-globe-label {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  padding: 0 0 0 12px;
+  margin-block-start: -9px;
+  color: var(--stage-muted, #9fb0c8);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 300ms ease, color 400ms ease;
+  will-change: transform;
+}
+
+.voyage-globe-label[data-reached='true'] {
+  color: var(--stage-ink, #eef1f6);
+}
+
+.voyage-globe-label[data-destination] {
+  color: #ffc56b;
+}
+
+.voyage-globe-label[data-side='left'] {
+  padding: 0 12px 0 0;
+  translate: -100% 0;
+}

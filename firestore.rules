@@ -20,7 +20,7 @@ service cloud.firestore {
     function serverOwnedShipmentFields() {
       return ['latestEvent', 'eventCount', 'trackingStatus', 'trackingError',
               'etaSource', 'etaVerified', 'etaChangeCount', 'lastEtaSyncAt',
-              'autoArchiveDisabled', 'restoredAt'];
+              'autoArchiveDisabled', 'restoredAt', 'vesselPosition'];
     }
 
     match /users/{uid} {

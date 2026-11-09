@@ -1,4 +1,4 @@
-import { Fragment, useDeferredValue, useEffect, useRef, useState } from 'react'
+import { Fragment, useDeferredValue, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { collection, deleteDoc, doc, onSnapshot, query, where } from 'firebase/firestore'
 import { Icon } from '@iconify/react'
@@ -9,10 +9,12 @@ import { getManifestSelection, getNextShipment, getShipmentEta, selectShipments 
 import { toTrackingDate } from '../lib/shipmentDetail'
 import { normalizeTrackingNumber } from '../lib/shipmentForm'
 import { setShipmentArchived } from '../lib/tracking'
+import EtaLane from '../components/EtaLane'
+import { gsap, prefersReducedMotion } from '../lib/scrollMotion'
 import './Dashboard.css'
 
 const etaOptions = [
-  ['all', 'Any ETA'], ['overdue', 'Past ETA'], ['week', 'Within 7 days'],
+  ['all', 'Any ETA'], ['arrived', 'Arrived'], ['overdue', 'Past ETA'], ['week', 'Within 7 days'],
   ['fortnight', 'In 8-14 days'], ['later', 'In 15+ days'], ['missing', 'No ETA'],
 ]
 const sortOptions = [['earliest', 'Soonest ETA'], ['latest', 'Latest ETA'], ['invoice', 'Invoice A-Z']]
@@ -84,7 +86,7 @@ function ManifestRow({ shipment, expanded, onToggle }) {
   const carrier = getCarrierLabel(shipment.carrier)
   const event = shipment.latestEvent?.title || (shipment.trackingStatus === 'error' ? 'Carrier update unavailable' : 'No carrier event')
   return (
-    <tr className="dash-row" data-expanded={expanded}>
+    <tr className="dash-row" id={`shipment-row-${shipment.id}`} data-expanded={expanded}>
       <th scope="row">
         <span className="dash-row__title" title={title}>{title}</span>
         <span className="dash-row__meta" title={shipment.consigneeName}>{shipment.consigneeName || 'Consignee not recorded'}</span>
@@ -95,7 +97,12 @@ function ManifestRow({ shipment, expanded, onToggle }) {
       <td className="dash-col-carrier">{carrier}</td>
       <td className="dash-col-event"><span title={event}>{event}</span></td>
       <td className="dash-col-eta">
-        {shipment.eta ? (
+        {shipment.bucket === 'arrived' ? (
+          <>
+            <span className="dash-row__arrived">Arrived</span>
+            {shipment.arrivedAt && <time className="dash-row__meta" dateTime={shipment.arrivedAt.toISOString()}>{dateFormat.format(shipment.arrivedAt)}</time>}
+          </>
+        ) : shipment.eta ? (
           <>
             <time dateTime={shipment.eta.toISOString()}>{dateFormat.format(shipment.eta)}</time>
             <span className="dash-row__meta">{formatEtaOffset(shipment.daysLeft)}</span>
@@ -144,28 +151,56 @@ function CopyReference({ number }) {
 
 function ShipmentPreview({ shipment, busy, onArchive, onDelete }) {
   const { id, blNo, latestEvent } = shipment
+  const panelRef = useRef(null)
+
+  // Opening: the panel eases to its height, then its parts rise in turn.
+  useLayoutEffect(() => {
+    const panel = panelRef.current
+    if (!panel || prefersReducedMotion()) return undefined
+    const ctx = gsap.context(() => {
+      gsap.timeline({ defaults: { ease: 'expo.out' } })
+        .fromTo(panel, { height: 0 }, { height: 'auto', duration: 0.55, clearProps: 'height' })
+        .from('[data-reveal]', { y: 10, opacity: 0, duration: 0.5, stagger: 0.05 }, 0.08)
+    }, panel)
+    return () => ctx.revert()
+  }, [])
+
+  const status = shipment.bucket === 'arrived'
+    ? `Arrived${shipment.arrivedAt ? ` ${dateFormat.format(shipment.arrivedAt)}` : ''}`
+    : shipment.eta ? `${dateFormat.format(shipment.eta)} · ${formatEtaOffset(shipment.daysLeft)}` : 'No ETA from the carrier yet'
+
   return (
-    <section className="dash-details" id={`shipment-preview-${id}`} aria-label={`Details for ${shipmentTitle(shipment)}`}>
-      <dl className="dash-details__facts">
-        <div>
-          <dt>Last reported location</dt>
-          <dd>{latestEvent?.location || 'Not reported'}</dd>
-          {latestEvent?.occurredAt && <dd className="dash-help"><time dateTime={latestEvent.occurredAt.toISOString()}>{eventFormat.format(latestEvent.occurredAt)}</time></dd>}
+    <section ref={panelRef} className="dash-details" id={`shipment-preview-${id}`} aria-label={`Details for ${shipmentTitle(shipment)}`}>
+      <div className="dash-details__inner">
+        <dl className="dash-details__facts">
+          <div className="dash-details__event" data-reveal>
+            <dt>Latest carrier event</dt>
+            <dd className="dash-details__event-title">{latestEvent?.title || 'No carrier event yet'}</dd>
+            {latestEvent && (
+              <dd className="dash-help">
+                {[latestEvent.location, latestEvent.occurredAt ? eventFormat.format(latestEvent.occurredAt) : ''].filter(Boolean).join(' · ')}
+              </dd>
+            )}
+          </div>
+          <div data-reveal><dt>{shipment.bucket === 'arrived' ? 'Status' : 'ETA'}</dt><dd>{status}</dd></div>
+          <div data-reveal><dt>Bill of lading</dt><dd><CopyReference number={blNo} /></dd></div>
+          <div data-reveal><dt>Consignee</dt><dd>{shipment.consigneeName || 'Not recorded'}</dd></div>
+          <div data-reveal><dt>Invoice amount</dt><dd>{formatAmount(shipment.invAmount)}</dd></div>
+        </dl>
+        <div className="dash-details__actions" role="group" aria-label="Shipment actions" data-reveal>
+          <Link className="dash-details__open" to={`/shipments/${id}`}>
+            Open shipment <Icon icon="solar:arrow-right-up-linear" width="16" height="16" aria-hidden="true" />
+          </Link>
+          <div className="dash-details__tools">
+            <Link className="st-secondary" to={`/edit/${id}`}><Icon icon="solar:pen-2-linear" width="16" height="16" aria-hidden="true" /> Edit</Link>
+            <button type="button" className="st-secondary" disabled={busy} onClick={() => onArchive(shipment)}>
+              <Icon icon="solar:archive-linear" width="16" height="16" aria-hidden="true" /> Archive
+            </button>
+            <button type="button" className="st-secondary dash-details__delete" disabled={busy} onClick={() => onDelete(shipment)}>
+              <Icon icon="solar:trash-bin-minimalistic-linear" width="16" height="16" aria-hidden="true" /> Delete
+            </button>
+          </div>
         </div>
-        <div><dt>Bill of lading</dt><dd><CopyReference number={blNo} /></dd></div>
-        <div><dt>Invoice amount</dt><dd>{formatAmount(shipment.invAmount)}</dd></div>
-      </dl>
-      <div className="dash-details__actions" role="group" aria-label="Shipment actions">
-        <Link className="dash-details__open" to={`/shipments/${id}`}>
-          Open shipment <Icon icon="solar:arrow-right-up-linear" width="16" height="16" aria-hidden="true" />
-        </Link>
-        <Link className="st-secondary" to={`/edit/${id}`}><Icon icon="solar:pen-2-linear" width="16" height="16" aria-hidden="true" /> Edit</Link>
-        <button type="button" className="st-secondary" disabled={busy} onClick={() => onArchive(shipment)}>
-          <Icon icon="solar:archive-linear" width="16" height="16" aria-hidden="true" /> Archive
-        </button>
-        <button type="button" className="st-secondary dash-details__delete" disabled={busy} onClick={() => onDelete(shipment)}>
-          <Icon icon="solar:trash-bin-minimalistic-linear" width="16" height="16" aria-hidden="true" /> Delete
-        </button>
       </div>
     </section>
   )
@@ -215,7 +250,7 @@ function Dashboard() {
     })
   }, [currentUser?.uid, loadAttempt])
 
-  const shipments = current.map((shipment) => ({ ...shipment, ...getShipmentEta(shipment.eta, now) }))
+  const shipments = current.map((shipment) => ({ ...shipment, ...getShipmentEta(shipment.eta, now, shipment.latestEvent) }))
   const visible = loadError ? [] : selectShipments(shipments, { search: searchTerm, carrier, window: etaWindow, sort })
   const expandedId = getManifestSelection(visible, requestedId)?.id
   const upcoming = !loadError && getNextShipment(shipments)
@@ -226,9 +261,28 @@ function Dashboard() {
 
   function toggleShipment(id) {
     const next = new URLSearchParams(params)
-    if (id === requestedId) next.delete('shipment')
+    const closing = id === requestedId
+    if (closing) next.delete('shipment')
     else next.set('shipment', id)
+    const commit = () => setParams(next, { preventScrollReset: true })
+
+    // Closing eases the open panel shut before the row is removed.
+    const panel = document.getElementById(`shipment-preview-${expandedId}`)
+    if (!panel || prefersReducedMotion() || (!closing && !expandedId)) {
+      commit()
+      return
+    }
+    gsap.to(panel, { height: 0, opacity: 0, duration: 0.3, ease: 'power2.in', onComplete: commit })
+  }
+
+  // From the lane: open that shipment's row and bring it into view.
+  function focusShipment(id) {
+    const next = new URLSearchParams(params)
+    next.set('shipment', id)
     setParams(next, { preventScrollReset: true })
+    window.requestAnimationFrame(() => {
+      document.getElementById(`shipment-row-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    })
   }
 
   function resetFilters() {
@@ -278,6 +332,14 @@ function Dashboard() {
         )}
         <QuickEntry />
       </header>
+      {!loading && !loadError && (
+        <EtaLane
+          shipments={shipments.map((item) => ({ ...item, carrierLabel: getCarrierLabel(item.carrier) }))}
+          now={now}
+          selectedId={expandedId}
+          onSelect={focusShipment}
+        />
+      )}
       {feedback && <p className="dash-feedback" data-error={Boolean(feedback.error)} role={feedback.error ? 'alert' : 'status'}>{feedback.text}</p>}
 
       <section className="dash-manifest" aria-labelledby="dash-manifest-title">

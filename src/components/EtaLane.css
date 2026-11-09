@@ -1,0 +1,219 @@
+.eta-lane {
+  --lane-arrived: #1f8a5b;
+  --lane-overdue: #c2304a;
+  --lane-week: #b86e00;
+  --lane-fortnight: var(--st-accent);
+  --lane-later: #8a989e;
+  margin-bottom: 28px;
+  padding: 16px clamp(14px, 2vw, 22px) 14px;
+  border: 1px solid var(--st-hairline);
+  border-radius: var(--st-radius-shell);
+  background: var(--st-surface);
+}
+
+@media (prefers-color-scheme: dark) {
+  .eta-lane {
+    --lane-arrived: #4ade80;
+    --lane-overdue: #fb7185;
+    --lane-week: #fbbf24;
+    --lane-later: #64748b;
+  }
+}
+
+.eta-lane__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 16px;
+}
+
+.eta-lane__head h2 {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.eta-lane__head p {
+  color: var(--st-muted);
+  font-size: 13px;
+}
+
+.eta-lane__track {
+  position: relative;
+  margin-top: 14px;
+}
+
+.eta-lane__grid {
+  position: absolute;
+  top: 0;
+  bottom: 26px;
+  width: 1px;
+  background: var(--st-hairline);
+}
+
+.eta-lane__axis {
+  position: absolute;
+  inset: auto 0 26px 0;
+  height: 1px;
+  background: var(--st-hairline);
+}
+
+.eta-lane__today {
+  position: absolute;
+  top: 0;
+  bottom: 26px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 2px;
+  background: var(--st-accent);
+}
+
+.eta-lane__item {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  translate: -50% 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--st-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.eta-lane__item[data-anchor='start'] {
+  align-items: flex-start;
+  translate: -6px 0;
+}
+
+.eta-lane__item[data-anchor='end'] {
+  align-items: flex-end;
+  translate: calc(-100% + 6px) 0;
+}
+
+.eta-lane__label {
+  max-width: 18ch;
+  overflow: hidden;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background-color 200ms ease, color 200ms ease;
+}
+
+.eta-lane__item:hover .eta-lane__label,
+.eta-lane__item:focus-visible .eta-lane__label {
+  background: var(--st-inset);
+}
+
+.eta-lane__item[aria-pressed='true'] .eta-lane__label {
+  background: var(--st-accent);
+  color: var(--st-accent-ink);
+}
+
+.eta-lane__item:focus-visible {
+  outline: none;
+}
+
+.eta-lane__item:focus-visible .eta-lane__label {
+  outline: 2px solid var(--st-focus);
+  outline-offset: 1px;
+}
+
+.eta-lane__dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-top: 3px;
+  border-radius: 50%;
+  background: var(--lane-later);
+  transition: transform 300ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.eta-lane__dot[data-bucket='arrived'] { background: var(--lane-arrived); }
+.eta-lane__dot[data-bucket='overdue'] { background: var(--lane-overdue); }
+.eta-lane__dot[data-bucket='week'] { background: var(--lane-week); }
+.eta-lane__dot[data-bucket='fortnight'] { background: var(--lane-fortnight); }
+
+.eta-lane__item:hover .eta-lane__dot,
+.eta-lane__item[aria-pressed='true'] .eta-lane__dot {
+  transform: scale(1.5);
+}
+
+.eta-lane__card {
+  position: absolute;
+  z-index: 3;
+  width: 260px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--st-text);
+  color: var(--st-canvas);
+  font-size: 13px;
+  line-height: 1.45;
+  pointer-events: none;
+  box-shadow: 0 12px 30px rgba(2, 6, 23, 0.25);
+  overflow-wrap: anywhere;
+  animation: eta-lane-card-in 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.eta-lane__card-title {
+  margin-bottom: 2px;
+  font-weight: 700;
+}
+
+.eta-lane__tick {
+  position: absolute;
+  bottom: 0;
+  white-space: nowrap;
+  color: var(--st-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.eta-lane__tick[data-today] {
+  color: var(--st-accent);
+  font-weight: 700;
+}
+
+.eta-lane__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-top: 10px;
+  padding: 0;
+  list-style: none;
+  color: var(--st-muted);
+  font-size: 12px;
+}
+
+.eta-lane__legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.eta-lane__legend .eta-lane__dot {
+  width: 8px;
+  height: 8px;
+  margin: 0;
+}
+
+@keyframes eta-lane-card-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (max-width: 39rem) {
+  .eta-lane__label { max-width: 11ch; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .eta-lane__card { animation: none; }
+  .eta-lane__dot,
+  .eta-lane__label { transition: none; }
+}
