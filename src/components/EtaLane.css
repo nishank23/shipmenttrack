@@ -4,9 +4,8 @@
   --lane-week: #b86e00;
   --lane-fortnight: var(--st-accent);
   --lane-later: #8a989e;
-  margin-bottom: 28px;
-  padding: 16px clamp(14px, 2vw, 22px) 14px;
-  border: 1px solid var(--st-hairline);
+  margin-bottom: 40px;
+  padding: 18px clamp(14px, 2vw, 24px) 16px;
   border-radius: var(--st-radius-shell);
   background: var(--st-surface);
 }
@@ -23,9 +22,9 @@
 .eta-lane__head {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  gap: 4px 16px;
+  gap: 8px 16px;
 }
 
 .eta-lane__head h2 {
@@ -34,22 +33,35 @@
   letter-spacing: -0.01em;
 }
 
-.eta-lane__head p {
+/* The counts are the legend and the manifest's ETA filter in one. */
+.eta-lane__counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.eta-lane__count {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 999px;
   color: var(--st-muted);
   font-size: 13px;
+  cursor: pointer;
+  transition: background-color 180ms ease, color 180ms ease;
 }
+
+.eta-lane__count strong { color: var(--st-text); font-weight: 700; font-variant-numeric: tabular-nums; }
+.eta-lane__count:hover { background: var(--st-inset); color: var(--st-text); }
+.eta-lane__count[aria-pressed='true'] { background: var(--st-inset); color: var(--st-text); }
+.eta-lane__count[aria-pressed='true'] strong { color: var(--st-accent); }
+.eta-lane__count .eta-lane__dot { width: 8px; height: 8px; margin: 0; }
 
 .eta-lane__track {
   position: relative;
-  margin-top: 14px;
-}
-
-.eta-lane__grid {
-  position: absolute;
-  top: 0;
-  bottom: 26px;
-  width: 1px;
-  background: var(--st-hairline);
+  margin-top: 18px;
 }
 
 .eta-lane__axis {
@@ -63,10 +75,9 @@
   position: absolute;
   top: 0;
   bottom: 26px;
-  width: 2px;
-  margin-left: -1px;
-  border-radius: 2px;
+  width: 1px;
   background: var(--st-accent);
+  opacity: 0.8;
 }
 
 .eta-lane__item {
@@ -81,7 +92,10 @@
   color: var(--st-text);
   font: inherit;
   cursor: pointer;
+  transition: opacity 200ms ease;
 }
+
+.eta-lane__item[data-dim] { opacity: 0.28; }
 
 .eta-lane__item[data-anchor='start'] {
   align-items: flex-start;
@@ -104,7 +118,8 @@
   overflow: hidden;
   padding: 2px 7px;
   border-radius: 6px;
-  font-size: 13px;
+  color: var(--st-muted);
+  font-size: 12.5px;
   font-weight: 600;
   line-height: 1.35;
   text-overflow: ellipsis;
@@ -112,9 +127,13 @@
   transition: background-color 200ms ease, color 200ms ease;
 }
 
+/* What needs attention reads in full ink; the rest stays quiet. */
+.eta-lane__item:is([data-bucket='week'], [data-bucket='overdue']) .eta-lane__label { color: var(--st-text); }
+
 .eta-lane__item:hover .eta-lane__label,
 .eta-lane__item:focus-visible .eta-lane__label {
   background: var(--st-inset);
+  color: var(--st-text);
 }
 
 .eta-lane__item[aria-pressed='true'] .eta-lane__label {
@@ -186,29 +205,6 @@
   font-weight: 700;
 }
 
-.eta-lane__legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 16px;
-  margin-top: 10px;
-  padding: 0;
-  list-style: none;
-  color: var(--st-muted);
-  font-size: 12px;
-}
-
-.eta-lane__legend li {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.eta-lane__legend .eta-lane__dot {
-  width: 8px;
-  height: 8px;
-  margin: 0;
-}
-
 @keyframes eta-lane-card-in {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: none; }
@@ -221,5 +217,7 @@
 @media (prefers-reduced-motion: reduce) {
   .eta-lane__card { animation: none; }
   .eta-lane__dot,
-  .eta-lane__label { transition: none; }
+  .eta-lane__label,
+  .eta-lane__item,
+  .eta-lane__count { transition: none; }
 }

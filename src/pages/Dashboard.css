@@ -7,73 +7,26 @@
 
 .dash-header {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 20rem);
-  grid-template-areas: 'title next' 'quick next';
-  align-items: center;
-  gap: 16px 24px;
-  margin-bottom: 32px;
+  gap: 8px;
+  margin-bottom: 28px;
 }
 
-.dash-title { grid-area: title; }
-.dash-title h1 {
+.dash-header h1 {
   font-size: clamp(26px, 3vw, 32px);
   font-weight: 730;
   letter-spacing: -0.035em;
   line-height: 1.1;
 }
 
-.dash-title p,
-.dash-next p,
-.dash-next > span,
+/* The screen's one finding, in full ink, read before anything else. */
+.dash-finding {
+  font-size: clamp(17px, 1.6vw, 20px);
+  font-weight: 560;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+}
+
 .dash-help { color: var(--st-muted); font-size: 13px; }
-
-.dash-title p { margin-top: 6px; font-size: 14px; }
-.dash-next {
-  grid-area: next;
-  display: grid;
-  gap: 4px;
-  justify-self: end;
-  max-width: 100%;
-  padding-inline-start: 16px;
-  border-inline-start: 1px solid var(--st-accent);
-  overflow-wrap: anywhere;
-}
-
-.dash-next time {
-  font-size: clamp(22px, 2.5vw, 28px);
-  font-weight: 650;
-  letter-spacing: -0.03em;
-  line-height: 1.14;
-}
-
-.dash-quick {
-  grid-area: quick;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  width: min(100%, 21rem);
-  min-width: 0;
-}
-
-.dash-quick input {
-  min-height: 40px;
-  padding-inline: 10px;
-  border-start-end-radius: 0;
-  border-end-end-radius: 0;
-  font-size: 16px;
-}
-
-.dash-quick input:focus-visible { position: relative; z-index: 1; }
-.dash-quick button {
-  padding-inline: 11px;
-  border: 1px solid var(--st-field-border);
-  border-inline-start: 0;
-  border-start-start-radius: 0;
-  border-end-start-radius: 0;
-  font-size: 13px;
-  font-weight: 680;
-  white-space: nowrap;
-  cursor: pointer;
-}
 
 .dash-feedback {
   margin-bottom: 12px;
@@ -122,9 +75,9 @@
 
 .dash-filters {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   justify-self: end;
-  width: min(100%, 25rem);
+  width: min(100%, 17rem);
   gap: 8px;
 }
 
@@ -137,8 +90,6 @@
 }
 
 .dash-clear {
-  grid-column: 1 / -1;
-  justify-self: end;
   min-height: 28px;
   color: var(--st-accent);
   font-size: 13px;
@@ -171,9 +122,7 @@
   font-weight: 590;
 }
 
-.dash-table .dash-col-name { width: 25%; }
-.dash-table .dash-col-bl { width: 19%; }
-.dash-table .dash-col-carrier { width: 12%; }
+.dash-table .dash-col-name { width: 38%; }
 .dash-table .dash-col-eta { width: 9rem; text-align: end; }
 .dash-table .dash-col-open { width: 3rem; padding-inline: 0; text-align: center; }
 .dash-row { position: relative; background: var(--st-surface); }
@@ -191,8 +140,6 @@
 
 .dash-row__title,
 .dash-row__meta,
-.dash-col-bl > span,
-.dash-row__mobile-bl,
 .dash-row__mobile-event {
   display: block;
   overflow: hidden;
@@ -202,14 +149,15 @@
 
 .dash-row__title { font-size: 15px; font-weight: 700; }
 .dash-row__meta,
-.dash-row__mobile-bl,
-.dash-row__mobile-event { color: var(--st-muted); font-size: 12px; font-weight: 500; }
-.dash-row .dash-col-carrier,
-.dash-col-event > span { color: var(--st-muted); }
-.dash-col-event > span { overflow-wrap: anywhere; }
-.dash-col-eta time { white-space: nowrap; font-weight: 670; }
-.dash-row__mobile-bl,
+.dash-row__mobile-event { margin-top: 2px; color: var(--st-muted); font-size: 12.5px; font-weight: 500; }
+.dash-col-event > span { color: var(--st-muted); overflow-wrap: anywhere; }
 .dash-row__mobile-event { display: none; }
+
+/* ETA: when, in words, then the date. Colour only where it means something. */
+.dash-row__when { display: block; white-space: nowrap; font-weight: 680; }
+.dash-col-eta[data-bucket='arrived'] .dash-row__when { color: var(--lane-arrived, #1f8a5b); }
+.dash-col-eta[data-bucket='overdue'] .dash-row__when { color: var(--lane-overdue, #c2304a); }
+.dash-col-eta time { white-space: nowrap; }
 
 .dash-row__toggle {
   display: inline-grid;
@@ -226,7 +174,6 @@
 .dash-row__toggle svg { transition: rotate 320ms cubic-bezier(0.16, 1, 0.3, 1); }
 .dash-row__toggle[aria-expanded='true'] svg { rotate: 180deg; }
 .dash-row { transition: background-color 180ms ease; }
-.dash-row__arrived { display: block; color: var(--lane-arrived, #1f8a5b); font-weight: 700; }
 
 .dash-table .dash-list-message { padding-block: 16px; font-size: 14px; }
 .dash-list-message .st-secondary { margin-top: 8px; padding-inline: 10px; font-size: 13px; }
@@ -321,7 +268,8 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  .dash-row__arrived { color: #4ade80; }
+  .dash-col-eta[data-bucket='arrived'] .dash-row__when { color: #4ade80; }
+  .dash-col-eta[data-bucket='overdue'] .dash-row__when { color: #fb7185; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -330,45 +278,23 @@
 }
 
 @media (max-width: 51rem) {
-  .dash-table .dash-col-bl { display: none; }
-  .dash-table .dash-col-name { width: 32%; }
-  .dash-row__mobile-bl { display: block; }
+  .dash-table .dash-col-name { width: 46%; }
 }
 
 @media (max-width: 39rem) {
-  .dash-header {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-areas: 'title' 'next' 'quick';
-    gap: 12px;
-    margin-bottom: 24px;
-  }
-
-  .dash-header:not(:has(.dash-next)) { grid-template-areas: 'title' 'quick'; }
-  .dash-next {
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas: 'label date' 'ref date';
-    align-items: center;
-    gap: 2px 8px;
-    justify-self: stretch;
-    padding-inline-start: 11px;
-  }
-  .dash-next p { grid-area: label; }
-  .dash-next time { grid-area: date; font-size: 17px; text-align: end; }
-  .dash-next > span { grid-area: ref; font-size: 12px; }
-  .dash-quick { width: 100%; }
+  .dash-header { margin-bottom: 20px; }
   .dash-manifest__toolbar { grid-template-columns: minmax(0, 1fr); gap: 8px; }
   .dash-filters { width: 100%; gap: 6px; }
   .dash-filters select { padding-inline: 4px; }
   .dash-table .dash-col-name { width: auto; }
   .dash-table .dash-col-eta { width: 6.75rem; padding-inline: 4px; }
   .dash-table .dash-col-open { width: 2.75rem; }
-  .dash-table .dash-col-carrier,
   .dash-table .dash-col-event { display: none; }
+  .dash-row__meta { display: none; }
   .dash-row__mobile-event { display: block; white-space: normal; overflow-wrap: anywhere; }
   .dash-details__inner { grid-template-columns: minmax(0, 1fr); gap: 14px; }
   .dash-details__actions { grid-template-columns: minmax(0, 1fr); }
   .dash-details__facts { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
-  .dash-quick input,
   .dash-search input,
   .dash-filters select,
   .dash-copy,
