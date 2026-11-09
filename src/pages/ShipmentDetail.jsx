@@ -343,7 +343,7 @@ function TrackingHistory({ history, containers, cache, pending }) {
 
       {reported.length > recentCount && (
         <button className="st-secondary sd-action sd-more" type="button" aria-expanded={showAll} onClick={() => setShowAll((value) => !value)}>
-          {showAll ? 'Show recent checkpoints' : `Show ${reported.length - recentCount} earlier checkpoints`}
+          {showAll ? 'Show recent checkpoints' : `Show ${reported.length - recentCount} earlier checkpoint${reported.length - recentCount === 1 ? '' : 's'}`}
         </button>
       )}
       {planned.length > 0 && (
