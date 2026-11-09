@@ -1,5 +1,5 @@
 import { Fragment, useDeferredValue, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { collection, deleteDoc, doc, onSnapshot, query, where } from 'firebase/firestore'
 import { Icon } from '@iconify/react'
 import { db } from '../../firebase'
@@ -7,18 +7,14 @@ import useAuth from '../hooks/useAuth'
 import { getCarrierLabel } from '../lib/carriers'
 import { getManifestSelection, getNextShipment, getShipmentEta, selectShipments } from '../lib/shipmentDashboard'
 import { toTrackingDate } from '../lib/shipmentDetail'
-import { normalizeTrackingNumber } from '../lib/shipmentForm'
 import { setShipmentArchived } from '../lib/tracking'
 import EtaLane from '../components/EtaLane'
 import { gsap, prefersReducedMotion } from '../lib/scrollMotion'
 import './Dashboard.css'
 
-const etaOptions = [
-  ['all', 'Any ETA'], ['arrived', 'Arrived'], ['overdue', 'Past ETA'], ['week', 'Within 7 days'],
-  ['fortnight', 'In 8-14 days'], ['later', 'In 15+ days'], ['missing', 'No ETA'],
-]
 const sortOptions = [['earliest', 'Soonest ETA'], ['latest', 'Latest ETA'], ['invoice', 'Invoice A-Z']]
 const dateFormat = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium' })
+const shortDate = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' })
 const eventFormat = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short' })
 const amountFormat = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' })
 
@@ -54,23 +50,16 @@ function formatEtaOffset(days) {
   return days < 0 ? `${duration} past ETA` : `In ${duration}`
 }
 
-function QuickEntry() {
-  const navigate = useNavigate()
-  const [reference, setReference] = useState('')
-  function openForm(event) {
-    event.preventDefault()
-    const bl = normalizeTrackingNumber(reference)
-    navigate(bl ? `/add?bl=${encodeURIComponent(bl)}` : '/add')
+// The one line under the title: what needs attention first.
+function summarize(shipments, next) {
+  const overdue = shipments.filter((item) => item.bucket === 'overdue')
+  if (overdue.length === 1) return `${shipmentTitle(overdue[0])} is past its ETA.`
+  if (overdue.length > 1) return `${overdue.length} shipments are past their ETA.`
+  if (next) {
+    const when = next.daysLeft === 0 ? 'today' : next.daysLeft === 1 ? 'tomorrow' : `in ${next.daysLeft} days, ${shortDate.format(next.eta)}`
+    return `${shipmentTitle(next)} is due ${when}.`
   }
-
-  return (
-    <form className="dash-quick" onSubmit={openForm}>
-      <label className="sr-only" htmlFor="quick-bl">Bill of lading number</label>
-      <input id="quick-bl" className="st-field" placeholder="Bill of lading number" value={reference}
-        onChange={(event) => setReference(event.target.value)} maxLength={40} autoComplete="off" spellCheck={false} />
-      <button type="submit" className="st-secondary">Track B/L</button>
-    </form>
-  )
+  return shipments.length ? 'Nothing is due in the next five weeks.' : ''
 }
 
 function FilterSelect({ label, options, value, onChange }) {
@@ -89,23 +78,20 @@ function ManifestRow({ shipment, expanded, onToggle }) {
     <tr className="dash-row" id={`shipment-row-${shipment.id}`} data-expanded={expanded}>
       <th scope="row">
         <span className="dash-row__title" title={title}>{title}</span>
-        <span className="dash-row__meta" title={shipment.consigneeName}>{shipment.consigneeName || 'Consignee not recorded'}</span>
-        <span className="dash-row__mobile-bl" title={shipment.blNo}>{shipment.blNo || 'No B/L'}</span>
-        <span className="dash-row__mobile-event" title={event}>{carrier} · {event}</span>
+        <span className="dash-row__meta" title={`${carrier} · ${shipment.blNo}`}>{carrier} · {shipment.blNo || 'No B/L'}</span>
+        <span className="dash-row__mobile-event" title={event}>{event}</span>
       </th>
-      <td className="dash-col-bl"><span title={shipment.blNo}>{shipment.blNo || 'No B/L'}</span></td>
-      <td className="dash-col-carrier">{carrier}</td>
       <td className="dash-col-event"><span title={event}>{event}</span></td>
-      <td className="dash-col-eta">
+      <td className="dash-col-eta" data-bucket={shipment.bucket}>
         {shipment.bucket === 'arrived' ? (
           <>
-            <span className="dash-row__arrived">Arrived</span>
-            {shipment.arrivedAt && <time className="dash-row__meta" dateTime={shipment.arrivedAt.toISOString()}>{dateFormat.format(shipment.arrivedAt)}</time>}
+            <span className="dash-row__when">Arrived</span>
+            {shipment.arrivedAt && <time className="dash-row__meta" dateTime={shipment.arrivedAt.toISOString()}>{shortDate.format(shipment.arrivedAt)}</time>}
           </>
         ) : shipment.eta ? (
           <>
-            <time dateTime={shipment.eta.toISOString()}>{dateFormat.format(shipment.eta)}</time>
-            <span className="dash-row__meta">{formatEtaOffset(shipment.daysLeft)}</span>
+            <span className="dash-row__when">{formatEtaOffset(shipment.daysLeft)}</span>
+            <time className="dash-row__meta" dateTime={shipment.eta.toISOString()}>{shortDate.format(shipment.eta)}</time>
           </>
         ) : <span className="dash-row__meta">No ETA</span>}
       </td>
@@ -254,6 +240,7 @@ function Dashboard() {
   const visible = loadError ? [] : selectShipments(shipments, { search: searchTerm, carrier, window: etaWindow, sort })
   const expandedId = getManifestSelection(visible, requestedId)?.id
   const upcoming = !loadError && getNextShipment(shipments)
+  const finding = loading || loadError ? '' : summarize(shipments, upcoming)
   const filtered = Boolean(search.trim() || carrier !== 'all' || etaWindow !== 'all')
   const carrierCodes = new Set(shipments.map((item) => item.carrier))
   if (carrier !== 'all') carrierCodes.add(carrier)
@@ -322,15 +309,8 @@ function Dashboard() {
   return (
     <main className="dash">
       <header className="dash-header">
-        <div className="dash-title"><h1>Shipments</h1><p>Carrier ETAs and the latest reported events.</p></div>
-        {upcoming && (
-          <div className="dash-next">
-            <p>Next estimated arrival</p>
-            <time dateTime={upcoming.eta.toISOString()}>{dateFormat.format(upcoming.eta)}</time>
-            <span>{shipmentTitle(upcoming)} · {getCarrierLabel(upcoming.carrier)}</span>
-          </div>
-        )}
-        <QuickEntry />
+        <h1>Shipments</h1>
+        {finding && <p className="dash-finding">{finding}</p>}
       </header>
       {!loading && !loadError && (
         <EtaLane
@@ -338,6 +318,8 @@ function Dashboard() {
           now={now}
           selectedId={expandedId}
           onSelect={focusShipment}
+          activeWindow={etaWindow}
+          onWindowChange={setEtaWindow}
         />
       )}
       {feedback && <p className="dash-feedback" data-error={Boolean(feedback.error)} role={feedback.error ? 'alert' : 'status'}>{feedback.text}</p>}
@@ -347,6 +329,7 @@ function Dashboard() {
           <div className="dash-manifest__heading">
             <h2 id="dash-manifest-title">Manifest</h2>
             <span role="status">{loading ? 'Loading...' : loadError ? 'Unavailable' : filtered ? `${visible.length} of ${shipments.length} shipments` : `${shipments.length} ${shipments.length === 1 ? 'shipment' : 'shipments'}`}</span>
+            {filtered && <button type="button" className="dash-clear" onClick={resetFilters}>Clear filters</button>}
           </div>
           <label className="dash-search">
             <span className="sr-only">Search shipments</span>
@@ -356,18 +339,14 @@ function Dashboard() {
           </label>
           <div className="dash-filters" role="group" aria-label="Shipment filters">
             <FilterSelect label="Carrier" options={carrierOptions} value={carrier} onChange={setCarrier} />
-            <FilterSelect label="ETA window" options={etaOptions} value={etaWindow} onChange={setEtaWindow} />
             <FilterSelect label="Sort shipments" options={sortOptions} value={sort} onChange={setSort} />
           </div>
-          {filtered && <button type="button" className="dash-clear" onClick={resetFilters}>Clear filters</button>}
         </div>
         <table className="dash-table" aria-labelledby="dash-manifest-title" aria-busy={loading || search !== searchTerm}>
           <thead>
             <tr>
               <th scope="col" className="dash-col-name">Shipment</th>
-              <th scope="col" className="dash-col-bl">Bill of lading</th>
-              <th scope="col" className="dash-col-carrier">Carrier</th>
-              <th scope="col" className="dash-col-event">Latest carrier event</th>
+              <th scope="col" className="dash-col-event">Latest event</th>
               <th scope="col" className="dash-col-eta">ETA</th>
               <th scope="col" className="dash-col-open"><span className="sr-only">Details</span></th>
             </tr>
@@ -378,7 +357,7 @@ function Dashboard() {
                 <ManifestRow shipment={shipment} expanded={shipment.id === expandedId} onToggle={toggleShipment} />
                 {shipment.id === expandedId && (
                   <tr className="dash-detail-row">
-                    <td colSpan={6}>
+                    <td colSpan={4}>
                       <ShipmentPreview shipment={shipment} busy={busy}
                         onArchive={(item) => changeShipment(item, 'archive')} onDelete={(item) => changeShipment(item, 'delete')} />
                     </td>
@@ -388,7 +367,7 @@ function Dashboard() {
             ))}
             {!visible.length && (
               <tr>
-                <td colSpan={6} className="dash-list-message">
+                <td colSpan={4} className="dash-list-message">
                   {loading ? 'Loading shipments...'
                     : loadError ? <><p role="alert">Shipments could not be loaded.</p><button type="button" className="st-secondary" onClick={retryLoad}>Try again</button></>
                       : filtered ? <><p>No matching shipments</p><p className="dash-help">Try changing the search or filters.</p></>

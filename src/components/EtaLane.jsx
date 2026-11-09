@@ -8,12 +8,14 @@ const shortDate = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numer
 const tickDate = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
 const calendarDay = (date) => Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / DAY
 
+// Order and wording of the counts above the lane; each one filters the manifest.
 const laneBuckets = {
-  arrived: 'Arrived',
-  overdue: 'Past ETA',
-  week: 'Within 7 days',
-  fortnight: '8–14 days',
-  later: 'Later',
+  overdue: 'past ETA',
+  week: 'this week',
+  fortnight: 'next week',
+  later: 'later',
+  arrived: 'arrived',
+  missing: 'no ETA',
 }
 
 /**
@@ -38,7 +40,7 @@ function assignRows(items, width) {
   })
 }
 
-function EtaLane({ shipments, now, selectedId, onSelect, from = -21, to = 35 }) {
+function EtaLane({ shipments, now, selectedId, onSelect, activeWindow = 'all', onWindowChange, from = -14, to = 35 }) {
   const rootRef = useRef(null)
   const trackRef = useRef(null)
   const [width, setWidth] = useState(900)
@@ -77,15 +79,15 @@ function EtaLane({ shipments, now, selectedId, onSelect, from = -21, to = 35 }) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shipments, today, width, from, to, span])
 
-  const unplotted = shipments.length - items.length
-  const usedBuckets = Object.keys(laneBuckets).filter((key) => items.some((item) => item.bucket === key))
+  const counts = Object.keys(laneBuckets)
+    .map((key) => [key, shipments.filter((shipment) => shipment.bucket === key).length])
+    .filter(([, count]) => count > 0)
   const rows = Math.max(1, ...items.map((item) => item.row + 1))
   const dataKey = items.map((item) => `${item.id}:${item.day}`).join('|')
 
-  const gridDays = []
-  for (let day = from; day <= to; day += 7) gridDays.push(day)
-  // Fortnightly date labels on narrow lanes so they never collide.
-  const ticks = width < 520 ? gridDays.filter((day) => day % 14 === 0) : gridDays
+  // Dates every two weeks around today; fewer marks, nothing to read past.
+  const ticks = []
+  for (let day = Math.ceil(from / 14) * 14; day <= to; day += 14) ticks.push(day)
 
   useLayoutEffect(() => {
     const track = trackRef.current
@@ -104,7 +106,7 @@ function EtaLane({ shipments, now, selectedId, onSelect, from = -21, to = 35 }) 
       const timeline = gsap.timeline({ defaults: { ease: 'expo.out' } })
       timeline
         .from('[data-lane-today]', { scaleY: 0, transformOrigin: 'bottom', duration: 0.9 })
-        .from('[data-lane-tick]', { opacity: 0, y: 6, stagger: 0.03, duration: 0.6 }, 0.1)
+        .from('[data-lane-tick]', { opacity: 0, y: 6, stagger: 0.05, duration: 0.6 }, 0.1)
       // Animate the inner glide, not the button: GSAP folds the button's CSS
       // `translate` (its edge anchoring) into its own transform and loses it.
       root.querySelectorAll('[data-lane-item]').forEach((node, index) => {
@@ -117,7 +119,7 @@ function EtaLane({ shipments, now, selectedId, onSelect, from = -21, to = 35 }) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dataKey])
 
-  if (!items.length) return null
+  if (!shipments.length) return null
 
   const laneHeight = rows * 28 + 40
   const active = hoverId ? items.find((item) => item.id === hoverId) : null
@@ -125,17 +127,29 @@ function EtaLane({ shipments, now, selectedId, onSelect, from = -21, to = 35 }) 
   return (
     <section ref={rootRef} className="eta-lane" aria-labelledby="eta-lane-title">
       <div className="eta-lane__head">
-        <h2 id="eta-lane-title">Arrival lane</h2>
-        <p>
-          Three weeks back to five weeks ahead
-          {unplotted > 0 ? ` · ${unplotted} without a date` : ''}
-        </p>
+        <h2 id="eta-lane-title">Arrivals</h2>
+        {counts.length > 0 && (
+          <div className="eta-lane__counts" role="group" aria-label="Show in the manifest">
+            {counts.map(([key, count]) => {
+              const pressed = activeWindow === key
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  className="eta-lane__count"
+                  aria-pressed={pressed}
+                  onClick={() => onWindowChange?.(pressed ? 'all' : key)}
+                >
+                  <span className="eta-lane__dot" data-bucket={key} aria-hidden="true" />
+                  <strong>{count}</strong> {laneBuckets[key]}
+                </button>
+              )
+            })}
+          </div>
+        )}
       </div>
 
       <div ref={trackRef} className="eta-lane__track" style={{ height: `${laneHeight}px` }}>
-        {gridDays.map((day) => (
-          <span key={`grid-${day}`} className="eta-lane__grid" style={{ left: `${position(day)}%` }} aria-hidden="true" />
-        ))}
         <span className="eta-lane__axis" aria-hidden="true" />
         <span data-lane-today className="eta-lane__today" style={{ left: `${position(0)}%` }} aria-hidden="true" />
 
@@ -149,6 +163,8 @@ function EtaLane({ shipments, now, selectedId, onSelect, from = -21, to = 35 }) 
               data-lane-item
               data-left={item.left}
               data-anchor={anchor}
+              data-dim={activeWindow !== 'all' && activeWindow !== item.bucket ? true : undefined}
+              data-bucket={item.bucket}
               className="eta-lane__item"
               aria-pressed={selected}
               aria-label={[item.label, ...item.lines].join(', ')}
@@ -201,16 +217,6 @@ function EtaLane({ shipments, now, selectedId, onSelect, from = -21, to = 35 }) 
         ))}
       </div>
 
-      {usedBuckets.length > 0 ? (
-        <ul className="eta-lane__legend" aria-label="Legend">
-          {usedBuckets.map((key) => (
-            <li key={key}>
-              <span className="eta-lane__dot" data-bucket={key} aria-hidden="true" />
-              {laneBuckets[key]}
-            </li>
-          ))}
-        </ul>
-      ) : null}
     </section>
   )
 }
