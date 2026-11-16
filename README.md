@@ -5,7 +5,7 @@ Paste a bill of lading. ShipTrack follows every container through the carrier's 
 **Live:** [shipmenttrack-837ec.web.app](https://shipmenttrack-837ec.web.app) · **Carriers:** MSC, ONE, Evergreen, PIL
 
 ![ShipTrack sign-in page with the voyage globe](docs/sign-in.jpg)
-![ShipTrack demo](docs/demo.gif)
+![ShipTrack demo](docs/shiptrack-demo-17s-30fps.gif)
 
 ## What it does
 
